@@ -57,10 +57,16 @@ NS_LOG_COMPONENT_DEFINE ("LeafSpineTopology");
 int
 main (int argc, char *argv[])
 {
+  // Network configuration parameters
+  std::string leafSpineBandwidth = "100Gbps"; // higher bandwidth to support aggregated traffic
+  std::string leafSpineDelay = "5us";         // higher delay due to longer physical distance
+  std::string serverLeafBandwidth = "25Gbps"; // lower bandwidth for server-leaf links
+  std::string serverLeafDelay = "1us";        // lower delay due to shorter physical distance
+
   // Simulation parameters
   double simulationTime = 10.0; // seconds
-  uint32_t numLeafSwitches = 12;
   uint32_t numSpineSwitches = 6;
+  uint32_t numLeafSwitches = 12;
   uint32_t serversPerLeaf = 24;
   uint32_t totalServers = numLeafSwitches * serversPerLeaf; // 288 servers
   
@@ -85,41 +91,41 @@ main (int argc, char *argv[])
   Config::SetDefault ("ns3::TcpSocket::TcpNoDelay", BooleanValue (true));      // Disable Nagle's algorithm
   
   NS_LOG_INFO ("Creating Leaf-Spine Topology");
-  NS_LOG_INFO ("Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("Spine switches: " << numSpineSwitches);
+  NS_LOG_INFO ("Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("Total servers: " << totalServers);
   NS_LOG_INFO ("ECN Configuration: " << ecnConfig);
   NS_LOG_INFO ("TCP congestion control: DCTCP (Data Center TCP)");
 
   // Create node containers
-  NodeContainer leafSwitches;
   NodeContainer spineSwitches;
+  NodeContainer leafSwitches;
   NodeContainer servers;
 
   // Create nodes
-  leafSwitches.Create (numLeafSwitches);
   spineSwitches.Create (numSpineSwitches);
+  leafSwitches.Create (numLeafSwitches);
   servers.Create (totalServers);
 
-  NS_LOG_INFO ("Created " << leafSwitches.GetN () << " leaf switches");
   NS_LOG_INFO ("Created " << spineSwitches.GetN () << " spine switches");
+  NS_LOG_INFO ("Created " << leafSwitches.GetN () << " leaf switches");
   NS_LOG_INFO ("Created " << servers.GetN () << " servers");
 
   // Configure point-to-point helpers for different link types
   PointToPointHelper leafSpineP2P;
-  leafSpineP2P.SetDeviceAttribute ("DataRate", StringValue ("100Gbps"));
-  leafSpineP2P.SetChannelAttribute ("Delay", StringValue ("5us"));
+  leafSpineP2P.SetDeviceAttribute ("DataRate", StringValue (leafSpineBandwidth));
+  leafSpineP2P.SetChannelAttribute ("Delay", StringValue (leafSpineDelay));
   leafSpineP2P.DisableFlowControl (); // Disable default flow control
 
   PointToPointHelper serverLeafP2P;
-  serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue ("25Gbps"));
-  serverLeafP2P.SetChannelAttribute ("Delay", StringValue ("1us"));
+  serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue (serverLeafBandwidth));
+  serverLeafP2P.SetChannelAttribute ("Delay", StringValue (serverLeafDelay));
   serverLeafP2P.DisableFlowControl (); // Disable default flow control
 
   // Install Internet stack
   InternetStackHelper stack;
-  stack.Install (leafSwitches);
   stack.Install (spineSwitches);
+  stack.Install (leafSwitches);
   stack.Install (servers);
 
   // Configure traffic control and queuing based on ECN configuration
@@ -130,6 +136,8 @@ main (int argc, char *argv[])
   
   uint32_t serverLeafMinTh_KB, serverLeafMaxTh_KB;
   uint32_t leafSpineMinTh_KB, leafSpineMaxTh_KB;
+
+  uint32_t queueSize_MB = 8; // Set queue size to 8MB for all links
   
   if (ecnConfig == "SECN1")
     {
@@ -161,36 +169,36 @@ main (int argc, char *argv[])
   uint32_t leafSpineMaxTh_bytes = leafSpineMaxTh_KB * 1024;
   
   // Set queue size to 8MB for all links
-  uint32_t queueSize_bytes = 8 * 1024 * 1024;  // 8MB in bytes
+  uint32_t queueSize_bytes = queueSize_MB * 1024 * 1024;  // 8MB in bytes
   
   NS_LOG_INFO ("ECN Threshold Configuration (" << ecnConfig << "):");
-  NS_LOG_INFO ("Server-Leaf links (25Gbps):");
+  NS_LOG_INFO ("Server-Leaf links (" << serverLeafBandwidth << "):");
   NS_LOG_INFO ("  MinTh: " << serverLeafMinTh_KB << "KB (" << serverLeafMinTh_bytes << " bytes)");
   NS_LOG_INFO ("  MaxTh: " << serverLeafMaxTh_KB << "KB (" << serverLeafMaxTh_bytes << " bytes)");
-  NS_LOG_INFO ("  Queue size: " << queueSize_bytes << " bytes (8MB)");
-  NS_LOG_INFO ("Leaf-Spine links (100Gbps):");
+  NS_LOG_INFO ("  Queue size: " << queueSize_MB << "MB (" << queueSize_bytes << " bytes)");
+  NS_LOG_INFO ("Leaf-Spine links (" << leafSpineBandwidth << "):");
   NS_LOG_INFO ("  MinTh: " << leafSpineMinTh_KB << "KB (" << leafSpineMinTh_bytes << " bytes)");
   NS_LOG_INFO ("  MaxTh: " << leafSpineMaxTh_KB << "KB (" << leafSpineMaxTh_bytes << " bytes)");
-  NS_LOG_INFO ("  Queue size: " << queueSize_bytes << " bytes (8MB)");
+  NS_LOG_INFO ("  Queue size: " << queueSize_MB << "MB (" << queueSize_bytes << " bytes)");
   
-  // Configure RED queue for server-leaf links (25Gbps) - Byte mode
+  // Configure RED queue for server-leaf links - Byte mode
   TrafficControlHelper tchServerLeaf;
   tchServerLeaf.SetRootQueueDisc ("ns3::RedQueueDisc",
                                   "MaxSize", StringValue (std::to_string(queueSize_bytes) + "B"),
                                   "MinTh", DoubleValue (serverLeafMinTh_bytes),
                                   "MaxTh", DoubleValue (serverLeafMaxTh_bytes),
-                                  "LinkBandwidth", DataRateValue (DataRate ("25Gbps")),
-                                  "LinkDelay", TimeValue (MicroSeconds (1)),
+                                  "LinkBandwidth", DataRateValue (DataRate (serverLeafBandwidth)),
+                                  "LinkDelay", TimeValue (Time (serverLeafDelay)),
                                   "UseEcn", BooleanValue (true));
   
-  // Configure RED queue for leaf-spine links (100Gbps) - Byte mode
+  // Configure RED queue for leaf-spine links - Byte mode
   TrafficControlHelper tchLeafSpine;
   tchLeafSpine.SetRootQueueDisc ("ns3::RedQueueDisc",
                                  "MaxSize", StringValue (std::to_string(queueSize_bytes) + "B"),
                                  "MinTh", DoubleValue (leafSpineMinTh_bytes),
                                  "MaxTh", DoubleValue (leafSpineMaxTh_bytes),
-                                 "LinkBandwidth", DataRateValue (DataRate ("100Gbps")),
-                                 "LinkDelay", TimeValue (MicroSeconds (5)),
+                                 "LinkBandwidth", DataRateValue (DataRate (leafSpineBandwidth)),
+                                 "LinkDelay", TimeValue (Time (leafSpineDelay)),
                                  "UseEcn", BooleanValue (true));
 
   // IP address helper
