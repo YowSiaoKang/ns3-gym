@@ -83,10 +83,14 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("Created " << spineSwitches.GetN () << " spine switches");
   NS_LOG_INFO ("Created " << servers.GetN () << " servers");
 
-  // Configure point-to-point helper
-  PointToPointHelper p2p;
-  p2p.SetDeviceAttribute ("DataRate", StringValue (linkBandwidth));
-  p2p.SetChannelAttribute ("Delay", StringValue (linkDelay));
+  // Configure point-to-point helpers for different link types
+  PointToPointHelper leafSpineP2P;
+  leafSpineP2P.SetDeviceAttribute ("DataRate", StringValue ("100Gbps"));
+  leafSpineP2P.SetChannelAttribute ("Delay", StringValue ("5us"));
+
+  PointToPointHelper serverLeafP2P;
+  serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue ("25Gbps"));
+  serverLeafP2P.SetChannelAttribute ("Delay", StringValue ("1us"));
 
   // Install Internet stack
   InternetStackHelper stack;
@@ -111,7 +115,7 @@ main (int argc, char *argv[])
           leafSpineLink.Add (leafSwitches.Get (leafIdx));
           leafSpineLink.Add (spineSwitches.Get (spineIdx));
           
-          NetDeviceContainer devices = p2p.Install (leafSpineLink);
+          NetDeviceContainer devices = leafSpineP2P.Install (leafSpineLink);
           allDevices.Add (devices);
           
           // Assign IP addresses
@@ -137,7 +141,7 @@ main (int argc, char *argv[])
           serverLeafLink.Add (servers.Get (globalServerIdx));
           serverLeafLink.Add (leafSwitches.Get (leafIdx));
           
-          NetDeviceContainer devices = p2p.Install (serverLeafLink);
+          NetDeviceContainer devices = serverLeafP2P.Install (serverLeafLink);
           allDevices.Add (devices);
           
           // Assign IP addresses for server connections
@@ -207,7 +211,8 @@ main (int argc, char *argv[])
   clientApps.Stop (Seconds (simulationTime));
 
   // Enable tracing (optional)
-  // p2p.EnablePcapAll ("leaf-spine");
+  // leafSpineP2P.EnablePcapAll ("leaf-spine-links");
+  // serverLeafP2P.EnablePcapAll ("server-leaf-links");
 
   // Create animation file for NetAnim (optional)
   AnimationInterface anim ("leaf-spine-topology.xml");
