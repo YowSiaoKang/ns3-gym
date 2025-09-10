@@ -65,11 +65,20 @@ main (int argc, char *argv[])
   // Enable logging
   LogComponentEnable ("LeafSpineTopology", LOG_LEVEL_INFO);
   
+  // Set DCTCP as the default TCP congestion control algorithm
+  Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue ("ns3::TcpDctcp"));
+  
+  // TCP socket configuration for better DCTCP performance
+  Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (1448));    // Standard MSS
+  Config::SetDefault ("ns3::TcpSocket::DelAckCount", UintegerValue (1));       // Immediate ACKs
+  Config::SetDefault ("ns3::TcpSocket::TcpNoDelay", BooleanValue (true));      // Disable Nagle's algorithm
+  
   NS_LOG_INFO ("Creating Leaf-Spine Topology");
   NS_LOG_INFO ("Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("Spine switches: " << numSpineSwitches);
   NS_LOG_INFO ("Total servers: " << totalServers);
   NS_LOG_INFO ("Queue configuration: RED with ECN, 8MB (~5461 packets) buffer size");
+  NS_LOG_INFO ("TCP congestion control: DCTCP (Data Center TCP)");
 
   // Create node containers
   NodeContainer leafSwitches;
@@ -245,6 +254,8 @@ main (int argc, char *argv[])
     }
 
   // Example application setup (echo server/client for testing)
+  // Note: Current applications are UDP-based for basic connectivity testing
+  // For DCTCP evaluation, replace with TCP-based applications (BulkSendApplication, etc.)
   NS_LOG_INFO ("Setting up test applications...");
   
   // Install echo server on first server
@@ -302,6 +313,10 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("- Spine switches: " << numSpineSwitches);
   NS_LOG_INFO ("- Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("- Servers: " << totalServers);
+  NS_LOG_INFO ("DCTCP baseline configuration complete:");
+  NS_LOG_INFO ("- RED queues with ECN marking on all switch interfaces");
+  NS_LOG_INFO ("- DCTCP congestion control algorithm set as default");
+  NS_LOG_INFO ("- High-speed data center network topology established");
 
   return 0;
 }
