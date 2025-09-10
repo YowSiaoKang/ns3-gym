@@ -30,17 +30,28 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE ("LeafSpineTopology");
 
 /**
- * \brief Leaf-Spine Data Center Topology
+ * \brief Leaf-Spine Data Center Topology with Configurable Static ECN Thresholds
  * 
  * This script creates a leaf-spine topology with:
  * - 12 leaf switches
  * - 6 spine switches
  * - 288 servers (24 servers per leaf switch)
+ * - Configurable static ECN thresholds (SECN1 and SECN2)
  * 
  * Topology structure:
  * - Each leaf switch connects to all spine switches
  * - Each server connects to one leaf switch
  * - Full bisection bandwidth between leaf and spine layers
+ * 
+ * ECN Configuration Options:
+ * - SECN1: MinTh=5KB, MaxTh=200KB (25Gbps server-leaf links)
+ *          MinTh=20KB, MaxTh=800KB (100Gbps leaf-spine links)
+ * - SECN2: MinTh=100KB, MaxTh=400KB (25Gbps server-leaf links)
+ *          MinTh=400KB, MaxTh=1600KB (100Gbps leaf-spine links)
+ * 
+ * Usage:
+ *   ./ns3 run "leaf-spine-topology --ecnConfig=SECN1"
+ *   ./ns3 run "leaf-spine-topology --ecnConfig=SECN2"
  */
 
 int
@@ -48,18 +59,18 @@ main (int argc, char *argv[])
 {
   // Simulation parameters
   double simulationTime = 10.0; // seconds
-  std::string linkBandwidth = "10Gbps";
-  std::string linkDelay = "1ms";
   uint32_t numLeafSwitches = 12;
   uint32_t numSpineSwitches = 6;
   uint32_t serversPerLeaf = 24;
   uint32_t totalServers = numLeafSwitches * serversPerLeaf; // 288 servers
-
+  
+  // ECN threshold configuration
+  std::string ecnConfig = "SECN1"; // Default to SECN1
+  
   // Parse command line arguments
   CommandLine cmd (__FILE__);
   cmd.AddValue ("simulationTime", "Simulation time in seconds", simulationTime);
-  cmd.AddValue ("linkBandwidth", "Link bandwidth", linkBandwidth);
-  cmd.AddValue ("linkDelay", "Link delay", linkDelay);
+  cmd.AddValue ("ecnConfig", "ECN threshold configuration (SECN1 or SECN2)", ecnConfig);
   cmd.Parse (argc, argv);
 
   // Enable logging
@@ -77,7 +88,7 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("Spine switches: " << numSpineSwitches);
   NS_LOG_INFO ("Total servers: " << totalServers);
-  NS_LOG_INFO ("Queue configuration: RED with ECN, 8MB (~5461 packets) buffer size");
+  NS_LOG_INFO ("ECN Configuration: " << ecnConfig);
   NS_LOG_INFO ("TCP congestion control: DCTCP (Data Center TCP)");
 
   // Create node containers
@@ -111,27 +122,85 @@ main (int argc, char *argv[])
   stack.Install (spineSwitches);
   stack.Install (servers);
 
-  // Configure traffic control and queuing
-  // Calculate queue size: 8MB / 1500 bytes ≈ 5461 packets
-  uint32_t queueSizePackets = 5461; // 8MB / 1500 bytes MTU
+  // Configure traffic control and queuing based on ECN configuration
+  // ECN threshold calculations:
+  // SECN1: MinTh = 5KB, MaxTh = 200KB (for 25Gbps server-leaf links)
+  // SECN2: MinTh = 100KB, MaxTh = 400KB (for 25Gbps server-leaf links)
+  // For 100Gbps leaf-spine links, scale proportionally (4x bandwidth ratio)
   
-  // Configure RED queue for ECN marking on switch interfaces
-  TrafficControlHelper tchRed;
-  tchRed.SetRootQueueDisc ("ns3::RedQueueDisc",
-                           "MaxSize", StringValue (std::to_string(queueSizePackets) + "p"),
-                           "MinTh", DoubleValue (queueSizePackets * 0.3),    // 30% threshold
-                           "MaxTh", DoubleValue (queueSizePackets * 0.8),    // 80% threshold
-                           "LinkBandwidth", DataRateValue (DataRate ("100Gbps")), // Max link rate
-                           "LinkDelay", TimeValue (MicroSeconds (5)),
-                           "UseEcn", BooleanValue (true));                   // Enable ECN marking
+  uint32_t serverLeafMinTh_KB, serverLeafMaxTh_KB;
+  uint32_t leafSpineMinTh_KB, leafSpineMaxTh_KB;
+  
+  if (ecnConfig == "SECN1")
+    {
+      // SECN1 configuration
+      serverLeafMinTh_KB = 5;    // 5KB
+      serverLeafMaxTh_KB = 200;  // 200KB
+      // Scale for 100Gbps links (4x the 25Gbps bandwidth)
+      leafSpineMinTh_KB = serverLeafMinTh_KB * 4;  // 20KB
+      leafSpineMaxTh_KB = serverLeafMaxTh_KB * 4;  // 800KB
+    }
+  else if (ecnConfig == "SECN2")
+    {
+      // SECN2 configuration
+      serverLeafMinTh_KB = 100;   // 100KB
+      serverLeafMaxTh_KB = 400;   // 400KB
+      // Scale for 100Gbps links (4x the 25Gbps bandwidth)
+      leafSpineMinTh_KB = serverLeafMinTh_KB * 4;  // 400KB
+      leafSpineMaxTh_KB = serverLeafMaxTh_KB * 4;  // 1600KB
+    }
+  else
+    {
+      NS_FATAL_ERROR ("Invalid ECN configuration. Use SECN1 or SECN2");
+    }
+  
+  // Convert KB to bytes for RED queue configuration
+  uint32_t serverLeafMinTh_bytes = serverLeafMinTh_KB * 1024;
+  uint32_t serverLeafMaxTh_bytes = serverLeafMaxTh_KB * 1024;
+  uint32_t leafSpineMinTh_bytes = leafSpineMinTh_KB * 1024;
+  uint32_t leafSpineMaxTh_bytes = leafSpineMaxTh_KB * 1024;
+  
+  // Set queue size to 8MB for all links
+  uint32_t queueSize_bytes = 8 * 1024 * 1024;  // 8MB in bytes
+  
+  NS_LOG_INFO ("ECN Threshold Configuration (" << ecnConfig << "):");
+  NS_LOG_INFO ("Server-Leaf links (25Gbps):");
+  NS_LOG_INFO ("  MinTh: " << serverLeafMinTh_KB << "KB (" << serverLeafMinTh_bytes << " bytes)");
+  NS_LOG_INFO ("  MaxTh: " << serverLeafMaxTh_KB << "KB (" << serverLeafMaxTh_bytes << " bytes)");
+  NS_LOG_INFO ("  Queue size: " << queueSize_bytes << " bytes (8MB)");
+  NS_LOG_INFO ("Leaf-Spine links (100Gbps):");
+  NS_LOG_INFO ("  MinTh: " << leafSpineMinTh_KB << "KB (" << leafSpineMinTh_bytes << " bytes)");
+  NS_LOG_INFO ("  MaxTh: " << leafSpineMaxTh_KB << "KB (" << leafSpineMaxTh_bytes << " bytes)");
+  NS_LOG_INFO ("  Queue size: " << queueSize_bytes << " bytes (8MB)");
+  
+  // Configure RED queue for server-leaf links (25Gbps) - Byte mode
+  TrafficControlHelper tchServerLeaf;
+  tchServerLeaf.SetRootQueueDisc ("ns3::RedQueueDisc",
+                                  "MaxSize", StringValue (std::to_string(queueSize_bytes) + "B"),
+                                  "MinTh", DoubleValue (serverLeafMinTh_bytes),
+                                  "MaxTh", DoubleValue (serverLeafMaxTh_bytes),
+                                  "LinkBandwidth", DataRateValue (DataRate ("25Gbps")),
+                                  "LinkDelay", TimeValue (MicroSeconds (1)),
+                                  "UseEcn", BooleanValue (true));
+  
+  // Configure RED queue for leaf-spine links (100Gbps) - Byte mode
+  TrafficControlHelper tchLeafSpine;
+  tchLeafSpine.SetRootQueueDisc ("ns3::RedQueueDisc",
+                                 "MaxSize", StringValue (std::to_string(queueSize_bytes) + "B"),
+                                 "MinTh", DoubleValue (leafSpineMinTh_bytes),
+                                 "MaxTh", DoubleValue (leafSpineMaxTh_bytes),
+                                 "LinkBandwidth", DataRateValue (DataRate ("100Gbps")),
+                                 "LinkDelay", TimeValue (MicroSeconds (5)),
+                                 "UseEcn", BooleanValue (true));
 
   // IP address helper
   Ipv4AddressHelper ipv4;
   ipv4.SetBase ("10.0.0.0", "255.255.255.0");
 
-  // Container to store all network devices for later reference
+  // Container to store network devices for different link types
   NetDeviceContainer allDevices;
-  NetDeviceContainer switchDevices; // For RED queue installation on switch interfaces only
+  NetDeviceContainer leafSpineSwitchDevices; // For leaf-spine link switch devices
+  NetDeviceContainer serverLeafSwitchDevices; // For server-leaf link switch devices
 
   // Connect leaf switches to spine switches (full mesh between layers)
   NS_LOG_INFO ("Creating leaf-to-spine connections...");
@@ -146,9 +215,9 @@ main (int argc, char *argv[])
           NetDeviceContainer devices = leafSpineP2P.Install (leafSpineLink);
           allDevices.Add (devices);
           
-          // Add switch devices (not server devices) to switch device container for RED queue installation
-          switchDevices.Add (devices.Get (0)); // Leaf switch device
-          switchDevices.Add (devices.Get (1)); // Spine switch device
+          // Add switch devices for leaf-spine links to appropriate container
+          leafSpineSwitchDevices.Add (devices.Get (0)); // Leaf switch device
+          leafSpineSwitchDevices.Add (devices.Get (1)); // Spine switch device
           
           // Assign IP addresses
           std::ostringstream subnet;
@@ -176,8 +245,8 @@ main (int argc, char *argv[])
           NetDeviceContainer devices = serverLeafP2P.Install (serverLeafLink);
           allDevices.Add (devices);
           
-          // Add only the leaf switch device (not server device) to switch device container
-          switchDevices.Add (devices.Get (1)); // Leaf switch device (server is Get(0))
+          // Add only the leaf switch device for server-leaf links
+          serverLeafSwitchDevices.Add (devices.Get (1)); // Leaf switch device (server is Get(0))
           
           // Assign IP addresses for server connections
           std::ostringstream subnet;
@@ -191,15 +260,20 @@ main (int argc, char *argv[])
         }
     }
 
-  // Install RED queues on switch devices only
+  // Install RED queues on switch devices with appropriate configurations
   NS_LOG_INFO ("Installing RED queues on switch devices...");
-  QueueDiscContainer queueDiscs = tchRed.Install (switchDevices);
+  
+  // Install RED queues on leaf-spine switch devices (100Gbps links)
+  QueueDiscContainer leafSpineQueueDiscs = tchLeafSpine.Install (leafSpineSwitchDevices);
+  
+  // Install RED queues on server-leaf switch devices (25Gbps links)
+  QueueDiscContainer serverLeafQueueDiscs = tchServerLeaf.Install (serverLeafSwitchDevices);
   
   NS_LOG_INFO ("RED queue installation summary:");
-  NS_LOG_INFO ("- Total switch devices with RED queues: " << switchDevices.GetN ());
-  NS_LOG_INFO ("- Queue disciplines created: " << queueDiscs.GetN ());
-  NS_LOG_INFO ("Queue size: " << queueSizePackets << " packets (~8MB with 1500 byte MTU)");
-  NS_LOG_INFO ("ECN marking enabled for congestion control");
+  NS_LOG_INFO ("- Leaf-spine switch devices with RED queues: " << leafSpineSwitchDevices.GetN ());
+  NS_LOG_INFO ("- Server-leaf switch devices with RED queues: " << serverLeafSwitchDevices.GetN ());
+  NS_LOG_INFO ("- Total queue disciplines created: " << (leafSpineQueueDiscs.GetN () + serverLeafQueueDiscs.GetN ()));
+  NS_LOG_INFO ("ECN marking enabled for " << ecnConfig << " configuration");
 
   // Populate routing tables
   NS_LOG_INFO ("Populating routing tables...");
@@ -297,7 +371,10 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("- Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("- Servers: " << totalServers);
   NS_LOG_INFO ("DCTCP baseline configuration complete:");
+  NS_LOG_INFO ("- ECN Configuration: " << ecnConfig);
   NS_LOG_INFO ("- RED queues with ECN marking on all switch interfaces");
+  NS_LOG_INFO ("- Server-leaf links: " << serverLeafMinTh_KB << "KB-" << serverLeafMaxTh_KB << "KB thresholds");
+  NS_LOG_INFO ("- Leaf-spine links: " << leafSpineMinTh_KB << "KB-" << leafSpineMaxTh_KB << "KB thresholds");
   NS_LOG_INFO ("- DCTCP congestion control algorithm set as default");
   NS_LOG_INFO ("- High-speed data center network topology established");
 
