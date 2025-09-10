@@ -75,4 +75,5 @@ build_lib_example(
     ${libapplications}
     ${libnetanim}
     ${libmobility}
+    ${libtraffic-control}
 )
