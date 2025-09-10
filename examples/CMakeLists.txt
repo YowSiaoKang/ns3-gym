@@ -63,3 +63,16 @@ build_lib_example(
     ${libpoint-to-point-layout}
     ${libptp}
 )
+
+build_lib_example(
+  NAME leaf-spine-topology
+  SOURCE_FILES DCTCP-baseline/leaf-spine-topology.cc
+  LIBRARIES_TO_LINK
+    ${libcore}
+    ${libnetwork}
+    ${libinternet}
+    ${libpoint-to-point}
+    ${libapplications}
+    ${libnetanim}
+    ${libmobility}
+)
