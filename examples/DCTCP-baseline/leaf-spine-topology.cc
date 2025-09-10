@@ -98,10 +98,18 @@ main (int argc, char *argv[])
   PointToPointHelper leafSpineP2P;
   leafSpineP2P.SetDeviceAttribute ("DataRate", StringValue ("100Gbps"));
   leafSpineP2P.SetChannelAttribute ("Delay", StringValue ("5us"));
+  leafSpineP2P.DisableFlowControl (); // Disable default flow control
 
   PointToPointHelper serverLeafP2P;
   serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue ("25Gbps"));
   serverLeafP2P.SetChannelAttribute ("Delay", StringValue ("1us"));
+  serverLeafP2P.DisableFlowControl (); // Disable default flow control
+
+  // Install Internet stack
+  InternetStackHelper stack;
+  stack.Install (leafSwitches);
+  stack.Install (spineSwitches);
+  stack.Install (servers);
 
   // Configure traffic control and queuing
   // Calculate queue size: 8MB / 1500 bytes ≈ 5461 packets
@@ -117,18 +125,13 @@ main (int argc, char *argv[])
                            "LinkDelay", TimeValue (MicroSeconds (5)),
                            "UseEcn", BooleanValue (true));                   // Enable ECN marking
 
-  // Install Internet stack
-  InternetStackHelper stack;
-  stack.Install (leafSwitches);
-  stack.Install (spineSwitches);
-  stack.Install (servers);
-
   // IP address helper
   Ipv4AddressHelper ipv4;
   ipv4.SetBase ("10.0.0.0", "255.255.255.0");
 
   // Container to store all network devices for later reference
   NetDeviceContainer allDevices;
+  NetDeviceContainer switchDevices; // For RED queue installation on switch interfaces only
 
   // Connect leaf switches to spine switches (full mesh between layers)
   NS_LOG_INFO ("Creating leaf-to-spine connections...");
@@ -142,6 +145,10 @@ main (int argc, char *argv[])
           
           NetDeviceContainer devices = leafSpineP2P.Install (leafSpineLink);
           allDevices.Add (devices);
+          
+          // Add switch devices (not server devices) to switch device container for RED queue installation
+          switchDevices.Add (devices.Get (0)); // Leaf switch device
+          switchDevices.Add (devices.Get (1)); // Spine switch device
           
           // Assign IP addresses
           std::ostringstream subnet;
@@ -169,6 +176,9 @@ main (int argc, char *argv[])
           NetDeviceContainer devices = serverLeafP2P.Install (serverLeafLink);
           allDevices.Add (devices);
           
+          // Add only the leaf switch device (not server device) to switch device container
+          switchDevices.Add (devices.Get (1)); // Leaf switch device (server is Get(0))
+          
           // Assign IP addresses for server connections
           std::ostringstream subnet;
           subnet << "192.168." << leafIdx << "." << (serverIdx * 4);
@@ -181,40 +191,13 @@ main (int argc, char *argv[])
         }
     }
 
-  // Install RED queues on all switch interfaces (leaf and spine switches)
-  NS_LOG_INFO ("Installing RED queues on switch interfaces...");
+  // Install RED queues on switch devices only
+  NS_LOG_INFO ("Installing RED queues on switch devices...");
+  QueueDiscContainer queueDiscs = tchRed.Install (switchDevices);
   
-  // Install RED queues on leaf switches
-  for (uint32_t leafIdx = 0; leafIdx < numLeafSwitches; ++leafIdx)
-    {
-      Ptr<Node> leafNode = leafSwitches.Get (leafIdx);
-      for (uint32_t deviceIdx = 0; deviceIdx < leafNode->GetNDevices (); ++deviceIdx)
-        {
-          Ptr<NetDevice> device = leafNode->GetDevice (deviceIdx);
-          if (device->GetTypeId ().GetName () == "ns3::PointToPointNetDevice")
-            {
-              tchRed.Install (device);
-              NS_LOG_INFO ("Installed RED queue on Leaf " << leafIdx << " device " << deviceIdx);
-            }
-        }
-    }
-  
-  // Install RED queues on spine switches
-  for (uint32_t spineIdx = 0; spineIdx < numSpineSwitches; ++spineIdx)
-    {
-      Ptr<Node> spineNode = spineSwitches.Get (spineIdx);
-      for (uint32_t deviceIdx = 0; deviceIdx < spineNode->GetNDevices (); ++deviceIdx)
-        {
-          Ptr<NetDevice> device = spineNode->GetDevice (deviceIdx);
-          if (device->GetTypeId ().GetName () == "ns3::PointToPointNetDevice")
-            {
-              tchRed.Install (device);
-              NS_LOG_INFO ("Installed RED queue on Spine " << spineIdx << " device " << deviceIdx);
-            }
-        }
-    }
-
-  NS_LOG_INFO ("RED queue configuration completed");
+  NS_LOG_INFO ("RED queue installation summary:");
+  NS_LOG_INFO ("- Total switch devices with RED queues: " << switchDevices.GetN ());
+  NS_LOG_INFO ("- Queue disciplines created: " << queueDiscs.GetN ());
   NS_LOG_INFO ("Queue size: " << queueSizePackets << " packets (~8MB with 1500 byte MTU)");
   NS_LOG_INFO ("ECN marking enabled for congestion control");
 
