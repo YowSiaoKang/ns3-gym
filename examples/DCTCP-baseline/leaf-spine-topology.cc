@@ -23,6 +23,7 @@
 #include "ns3/applications-module.h"
 #include "ns3/netanim-module.h"
 #include "ns3/mobility-module.h"
+#include "ns3/traffic-control-module.h"
 
 using namespace ns3;
 
@@ -68,6 +69,7 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("Spine switches: " << numSpineSwitches);
   NS_LOG_INFO ("Total servers: " << totalServers);
+  NS_LOG_INFO ("Queue configuration: RED with ECN, 8MB (~5461 packets) buffer size");
 
   // Create node containers
   NodeContainer leafSwitches;
@@ -91,6 +93,20 @@ main (int argc, char *argv[])
   PointToPointHelper serverLeafP2P;
   serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue ("25Gbps"));
   serverLeafP2P.SetChannelAttribute ("Delay", StringValue ("1us"));
+
+  // Configure traffic control and queuing
+  // Calculate queue size: 8MB / 1500 bytes ≈ 5461 packets
+  uint32_t queueSizePackets = 5461; // 8MB / 1500 bytes MTU
+  
+  // Configure RED queue for ECN marking on switch interfaces
+  TrafficControlHelper tchRed;
+  tchRed.SetRootQueueDisc ("ns3::RedQueueDisc",
+                           "MaxSize", StringValue (std::to_string(queueSizePackets) + "p"),
+                           "MinTh", DoubleValue (queueSizePackets * 0.3),    // 30% threshold
+                           "MaxTh", DoubleValue (queueSizePackets * 0.8),    // 80% threshold
+                           "LinkBandwidth", DataRateValue (DataRate ("100Gbps")), // Max link rate
+                           "LinkDelay", TimeValue (MicroSeconds (5)),
+                           "UseEcn", BooleanValue (true));                   // Enable ECN marking
 
   // Install Internet stack
   InternetStackHelper stack;
@@ -155,6 +171,43 @@ main (int argc, char *argv[])
                       << " with subnet " << subnet.str ());
         }
     }
+
+  // Install RED queues on all switch interfaces (leaf and spine switches)
+  NS_LOG_INFO ("Installing RED queues on switch interfaces...");
+  
+  // Install RED queues on leaf switches
+  for (uint32_t leafIdx = 0; leafIdx < numLeafSwitches; ++leafIdx)
+    {
+      Ptr<Node> leafNode = leafSwitches.Get (leafIdx);
+      for (uint32_t deviceIdx = 0; deviceIdx < leafNode->GetNDevices (); ++deviceIdx)
+        {
+          Ptr<NetDevice> device = leafNode->GetDevice (deviceIdx);
+          if (device->GetTypeId ().GetName () == "ns3::PointToPointNetDevice")
+            {
+              tchRed.Install (device);
+              NS_LOG_INFO ("Installed RED queue on Leaf " << leafIdx << " device " << deviceIdx);
+            }
+        }
+    }
+  
+  // Install RED queues on spine switches
+  for (uint32_t spineIdx = 0; spineIdx < numSpineSwitches; ++spineIdx)
+    {
+      Ptr<Node> spineNode = spineSwitches.Get (spineIdx);
+      for (uint32_t deviceIdx = 0; deviceIdx < spineNode->GetNDevices (); ++deviceIdx)
+        {
+          Ptr<NetDevice> device = spineNode->GetDevice (deviceIdx);
+          if (device->GetTypeId ().GetName () == "ns3::PointToPointNetDevice")
+            {
+              tchRed.Install (device);
+              NS_LOG_INFO ("Installed RED queue on Spine " << spineIdx << " device " << deviceIdx);
+            }
+        }
+    }
+
+  NS_LOG_INFO ("RED queue configuration completed");
+  NS_LOG_INFO ("Queue size: " << queueSizePackets << " packets (~8MB with 1500 byte MTU)");
+  NS_LOG_INFO ("ECN marking enabled for congestion control");
 
   // Populate routing tables
   NS_LOG_INFO ("Populating routing tables...");
