@@ -24,6 +24,9 @@
 #include "ns3/netanim-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/traffic-control-module.h"
+#include "ns3/internet-apps-module.h"
+#include "datacenter-workload-generator.h"
+#include "traffic-analyzer.h"
 
 using namespace ns3;
 
@@ -64,7 +67,7 @@ main (int argc, char *argv[])
   std::string serverLeafDelay = "1us";        // lower delay due to shorter physical distance
 
   // Simulation parameters
-  double simulationTime = 10.0; // seconds
+  double simulationTime = 10.0; // seconds - longer for traffic analysis
   uint32_t numSpineSwitches = 6;
   uint32_t numLeafSwitches = 12;
   uint32_t serversPerLeaf = 24;
@@ -73,18 +76,31 @@ main (int argc, char *argv[])
   // ECN threshold configuration
   std::string ecnConfig = "SECN1"; // Default to SECN1
   
+  // Traffic workload parameters
+  std::string workloadType = "WEB_SEARCH"; // WEB_SEARCH or DATA_MINING
+  double networkLoad = 0.7; // 70% load by default
+  double flowArrivalRate = 200.0; // flows per second
+  bool enableRealisticTraffic = true; // Enable realistic traffic patterns
+  
   // Parse command line arguments
   CommandLine cmd (__FILE__);
   cmd.AddValue ("simulationTime", "Simulation time in seconds", simulationTime);
   cmd.AddValue ("ecnConfig", "ECN threshold configuration (SECN1 or SECN2)", ecnConfig);
+  cmd.AddValue ("workloadType", "Traffic workload type (WEB_SEARCH or DATA_MINING)", workloadType);
+  cmd.AddValue ("networkLoad", "Target network load (0.6, 0.7, 0.8, 0.9)", networkLoad);
+  cmd.AddValue ("flowArrivalRate", "Average flows per second", flowArrivalRate);
+  cmd.AddValue ("enableRealisticTraffic", "Enable realistic traffic patterns", enableRealisticTraffic);
   cmd.Parse (argc, argv);
 
   // Enable logging
   LogComponentEnable ("LeafSpineTopology", LOG_LEVEL_INFO);
+  // LogComponentEnable ("DataCenterWorkloadGenerator", LOG_LEVEL_DEBUG);
+  // LogComponentEnable ("TcpSocketBase", LOG_LEVEL_WARN); // Show connection issues
+  // LogComponentEnable ("PacketSink", LOG_LEVEL_INFO); // Show sink activity
   
   // Set DCTCP as the default TCP congestion control algorithm
-  Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue ("ns3::TcpDctcp"));
-  
+  Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (ns3::TcpDctcp::GetTypeId ()));
+
   // TCP socket configuration for better DCTCP performance
   Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (1448));    // Standard MSS
   Config::SetDefault ("ns3::TcpSocket::DelAckCount", UintegerValue (1));       // Immediate ACKs
@@ -96,6 +112,12 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("Total servers: " << totalServers);
   NS_LOG_INFO ("ECN Configuration: " << ecnConfig);
   NS_LOG_INFO ("TCP congestion control: DCTCP (Data Center TCP)");
+  NS_LOG_INFO ("Traffic Configuration:");
+  NS_LOG_INFO ("- Workload Type: " << workloadType);
+  NS_LOG_INFO ("- Network Load: " << (networkLoad * 100) << "%");
+  NS_LOG_INFO ("- Flow Arrival Rate: " << flowArrivalRate << " flows/sec");
+  NS_LOG_INFO ("- Realistic Traffic: " << (enableRealisticTraffic ? "Enabled" : "Disabled"));
+  NS_LOG_INFO ("- Simulation Time: " << simulationTime << " seconds");
 
   // Create node containers
   NodeContainer spineSwitches;
@@ -318,26 +340,87 @@ main (int argc, char *argv[])
       servers.Get (i)->AggregateObject (pos);
     }
 
-  // Example application setup (echo server/client for testing)
-  // Note: Current applications are UDP-based for basic connectivity testing
-  // For DCTCP evaluation, replace with TCP-based applications (BulkSendApplication, etc.)
-  NS_LOG_INFO ("Setting up test applications...");
+  // Set up realistic data center traffic workloads
+  NS_LOG_INFO ("Setting up realistic data center traffic workloads...");
   
-  // Install echo server on first server
-  UdpEchoServerHelper echoServer (9);
-  ApplicationContainer serverApps = echoServer.Install (servers.Get (0));
-  serverApps.Start (Seconds (1.0));
-  serverApps.Stop (Seconds (simulationTime));
+  if (enableRealisticTraffic)
+    {
+      // Install TCP sink applications on all servers to receive traffic
+      uint16_t sinkPort = 8080;
+      Address sinkAddress (InetSocketAddress (Ipv4Address::GetAny (), sinkPort));
+      PacketSinkHelper packetSinkHelper ("ns3::TcpSocketFactory", sinkAddress);
+      ApplicationContainer sinkApps = packetSinkHelper.Install (servers);
+      sinkApps.Start (Seconds (0.0));
+      sinkApps.Stop (Seconds (simulationTime));
+      
+      NS_LOG_INFO ("Installed TCP sinks on " << servers.GetN () << " servers");
+      
+      // Create traffic analyzer for performance monitoring
+      Ptr<TrafficAnalyzer> analyzer = CreateObject<TrafficAnalyzer> ();
+      std::string analysisFile = "traffic_analysis_" + workloadType + "_" + 
+                                 std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
+                                 ecnConfig + ".txt";
+      analyzer->SetOutputFile (analysisFile);
+      
+      // Create and configure the realistic workload generator
+      Ptr<DataCenterWorkloadGenerator> workloadGenerator = CreateObject<DataCenterWorkloadGenerator> ();
+      
+      // Set workload type
+      WorkloadType wType = WEB_SEARCH;
+      if (workloadType == "DATA_MINING")
+        {
+          wType = DATA_MINING;
+        }
+      
+      workloadGenerator->SetServerNodes (servers);
+      workloadGenerator->SetWorkloadType (wType);
+      workloadGenerator->SetNetworkLoad (networkLoad);
+      workloadGenerator->SetFlowArrivalRate (flowArrivalRate);
+      
+      // Connect analyzer callbacks to workload generator
+      workloadGenerator->TraceConnectWithoutContext ("FlowStarted", 
+        MakeCallback (&TrafficAnalyzer::FlowStarted, analyzer));
+      workloadGenerator->TraceConnectWithoutContext ("FlowCompleted", 
+        MakeCallback (&TrafficAnalyzer::FlowCompleted, analyzer));
+      workloadGenerator->TraceConnectWithoutContext ("BytesSent", 
+        MakeCallback (&TrafficAnalyzer::BytesSent, analyzer));
+      
+      // Install the workload generator on the first server (it will generate traffic to all servers)
+      servers.Get (0)->AddApplication (workloadGenerator);
+      workloadGenerator->SetStartTime (Seconds (1.0));
+      workloadGenerator->SetStopTime (Seconds (simulationTime - 1.0));
+      
+      // Schedule final report generation
+      Simulator::Schedule (Seconds (simulationTime - 0.5), &TrafficAnalyzer::GenerateReport, analyzer);
+      
+      NS_LOG_INFO ("Configured realistic workload generator:");
+      NS_LOG_INFO ("- Type: " << workloadType);
+      NS_LOG_INFO ("- Load: " << (networkLoad * 100) << "%");
+      NS_LOG_INFO ("- Rate: " << flowArrivalRate << " flows/sec");
+      NS_LOG_INFO ("- Expected total flows: ~" << static_cast<uint32_t>(flowArrivalRate * (simulationTime - 2.0)));
+      NS_LOG_INFO ("- Analysis output: " << analysisFile);
+    }
+  else
+    {
+      // Fallback to simple UDP echo for basic connectivity testing
+      NS_LOG_INFO ("Using simple UDP echo applications for basic testing...");
+      
+      // Install echo server on first server
+      UdpEchoServerHelper echoServer (9);
+      ApplicationContainer serverApps = echoServer.Install (servers.Get (0));
+      serverApps.Start (Seconds (1.0));
+      serverApps.Stop (Seconds (simulationTime));
 
-  // Install echo client on last server
-  UdpEchoClientHelper echoClient (servers.Get (0)->GetObject<Ipv4> ()->GetAddress (1, 0).GetLocal (), 9);
-  echoClient.SetAttribute ("MaxPackets", UintegerValue (10));
-  echoClient.SetAttribute ("Interval", TimeValue (Seconds (1.0)));
-  echoClient.SetAttribute ("PacketSize", UintegerValue (1024));
+      // Install echo client on last server
+      UdpEchoClientHelper echoClient (servers.Get (0)->GetObject<Ipv4> ()->GetAddress (1, 0).GetLocal (), 9);
+      echoClient.SetAttribute ("MaxPackets", UintegerValue (100));
+      echoClient.SetAttribute ("Interval", TimeValue (Seconds (0.1)));
+      echoClient.SetAttribute ("PacketSize", UintegerValue (1024));
 
-  ApplicationContainer clientApps = echoClient.Install (servers.Get (totalServers - 1));
-  clientApps.Start (Seconds (2.0));
-  clientApps.Stop (Seconds (simulationTime));
+      ApplicationContainer clientApps = echoClient.Install (servers.Get (totalServers - 1));
+      clientApps.Start (Seconds (2.0));
+      clientApps.Stop (Seconds (simulationTime));
+    }
 
   // Enable tracing (optional)
   // leafSpineP2P.EnablePcapAll ("leaf-spine-links");
@@ -374,17 +457,18 @@ main (int argc, char *argv[])
   Simulator::Destroy ();
 
   NS_LOG_INFO ("Simulation completed successfully");
-  NS_LOG_INFO ("Total nodes created: " << NodeList::GetNNodes ());
+  NS_LOG_INFO ("Total nodes created: " << numSpineSwitches + numLeafSwitches + totalServers);
   NS_LOG_INFO ("- Spine switches: " << numSpineSwitches);
   NS_LOG_INFO ("- Leaf switches: " << numLeafSwitches);
   NS_LOG_INFO ("- Servers: " << totalServers);
-  NS_LOG_INFO ("DCTCP baseline configuration complete:");
+  NS_LOG_INFO ("DCTCP with Realistic Traffic Configuration Complete:");
   NS_LOG_INFO ("- ECN Configuration: " << ecnConfig);
   NS_LOG_INFO ("- RED queues with ECN marking on all switch interfaces");
   NS_LOG_INFO ("- Server-leaf links: " << serverLeafMinTh_KB << "KB-" << serverLeafMaxTh_KB << "KB thresholds");
   NS_LOG_INFO ("- Leaf-spine links: " << leafSpineMinTh_KB << "KB-" << leafSpineMaxTh_KB << "KB thresholds");
   NS_LOG_INFO ("- DCTCP congestion control algorithm set as default");
-  NS_LOG_INFO ("- High-speed data center network topology established");
+  NS_LOG_INFO ("- Workload Type: " << workloadType << " at " << (networkLoad * 100) << "% load");
+  NS_LOG_INFO ("- High-speed data center network topology with realistic traffic patterns");
 
   return 0;
 }
