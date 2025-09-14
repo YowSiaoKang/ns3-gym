@@ -26,7 +26,6 @@
 #include "ns3/traffic-control-module.h"
 #include "ns3/internet-apps-module.h"
 #include "datacenter-workload-generator.h"
-#include "traffic-analyzer.h"
 
 using namespace ns3;
 
@@ -355,13 +354,6 @@ main (int argc, char *argv[])
       
       NS_LOG_INFO ("Installed TCP sinks on " << servers.GetN () << " servers");
       
-      // Create traffic analyzer for performance monitoring
-      Ptr<TrafficAnalyzer> analyzer = CreateObject<TrafficAnalyzer> ();
-      std::string analysisFile = "traffic_analysis_" + workloadType + "_" + 
-                                 std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
-                                 ecnConfig + ".txt";
-      analyzer->SetOutputFile (analysisFile);
-      
       // Create and configure the realistic workload generator
       Ptr<DataCenterWorkloadGenerator> workloadGenerator = CreateObject<DataCenterWorkloadGenerator> ();
       
@@ -377,28 +369,16 @@ main (int argc, char *argv[])
       workloadGenerator->SetNetworkLoad (networkLoad);
       workloadGenerator->SetFlowArrivalRate (flowArrivalRate);
       
-      // Connect analyzer callbacks to workload generator
-      workloadGenerator->TraceConnectWithoutContext ("FlowStarted", 
-        MakeCallback (&TrafficAnalyzer::FlowStarted, analyzer));
-      workloadGenerator->TraceConnectWithoutContext ("FlowCompleted", 
-        MakeCallback (&TrafficAnalyzer::FlowCompleted, analyzer));
-      workloadGenerator->TraceConnectWithoutContext ("BytesSent", 
-        MakeCallback (&TrafficAnalyzer::BytesSent, analyzer));
-      
       // Install the workload generator on the first server (it will generate traffic to all servers)
       servers.Get (0)->AddApplication (workloadGenerator);
       workloadGenerator->SetStartTime (Seconds (1.0));
       workloadGenerator->SetStopTime (Seconds (simulationTime - 1.0));
-      
-      // Schedule final report generation
-      Simulator::Schedule (Seconds (simulationTime - 0.5), &TrafficAnalyzer::GenerateReport, analyzer);
       
       NS_LOG_INFO ("Configured realistic workload generator:");
       NS_LOG_INFO ("- Type: " << workloadType);
       NS_LOG_INFO ("- Load: " << (networkLoad * 100) << "%");
       NS_LOG_INFO ("- Rate: " << flowArrivalRate << " flows/sec");
       NS_LOG_INFO ("- Expected total flows: ~" << static_cast<uint32_t>(flowArrivalRate * (simulationTime - 2.0)));
-      NS_LOG_INFO ("- Analysis output: " << analysisFile);
     }
   else
     {
