@@ -68,6 +68,7 @@ build_lib_example(
   NAME leaf-spine-topology
   SOURCE_FILES DCTCP-baseline/leaf-spine-topology.cc
                DCTCP-baseline/datacenter-workload-generator.cc
+               DCTCP-baseline/metrics-collector.cc
   LIBRARIES_TO_LINK
     ${libcore}
     ${libnetwork}
@@ -78,4 +79,5 @@ build_lib_example(
     ${libmobility}
     ${libtraffic-control}
     ${libinternet-apps}
+    ${libflow-monitor}
 )

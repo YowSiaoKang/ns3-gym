@@ -25,11 +25,41 @@
 #include "ns3/mobility-module.h"
 #include "ns3/traffic-control-module.h"
 #include "ns3/internet-apps-module.h"
+#include "ns3/flow-monitor-module.h"
 #include "datacenter-workload-generator.h"
+#include "metrics-collector.h"
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE ("LeafSpineTopology");
+
+// Global pointer to metrics collector for queue tracing
+Ptr<MetricsCollector> g_metricsCollector;
+
+// Queue trace callbacks
+void QueueEnqueueTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+{
+  if (g_metricsCollector)
+    {
+      g_metricsCollector->PacketEnqueue (queueId, item->GetPacket ());
+    }
+}
+
+void QueueDequeueTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+{
+  if (g_metricsCollector)
+    {
+      g_metricsCollector->PacketDequeue (queueId, item->GetPacket ());
+    }
+}
+
+void QueueDropTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+{
+  if (g_metricsCollector)
+    {
+      g_metricsCollector->PacketDrop (queueId, item->GetPacket ());
+    }
+}
 
 /**
  * \brief Leaf-Spine Data Center Topology with Configurable Static ECN Thresholds
@@ -136,12 +166,10 @@ main (int argc, char *argv[])
   PointToPointHelper leafSpineP2P;
   leafSpineP2P.SetDeviceAttribute ("DataRate", StringValue (leafSpineBandwidth));
   leafSpineP2P.SetChannelAttribute ("Delay", StringValue (leafSpineDelay));
-  leafSpineP2P.DisableFlowControl (); // Disable default flow control
 
   PointToPointHelper serverLeafP2P;
   serverLeafP2P.SetDeviceAttribute ("DataRate", StringValue (serverLeafBandwidth));
   serverLeafP2P.SetChannelAttribute ("Delay", StringValue (serverLeafDelay));
-  serverLeafP2P.DisableFlowControl (); // Disable default flow control
 
   // Install Internet stack
   InternetStackHelper stack;
@@ -292,6 +320,11 @@ main (int argc, char *argv[])
   // Install RED queues on switch devices with appropriate configurations
   NS_LOG_INFO ("Installing RED queues on switch devices...");
   
+  // Remove any existing queue disciplines that might have been installed by flow control
+  TrafficControlHelper tchUninstall;
+  tchUninstall.Uninstall (leafSpineSwitchDevices);
+  tchUninstall.Uninstall (serverLeafSwitchDevices);
+  
   // Install RED queues on leaf-spine switch devices (100Gbps links)
   QueueDiscContainer leafSpineQueueDiscs = tchLeafSpine.Install (leafSpineSwitchDevices);
   
@@ -304,9 +337,71 @@ main (int argc, char *argv[])
   NS_LOG_INFO ("- Total queue disciplines created: " << (leafSpineQueueDiscs.GetN () + serverLeafQueueDiscs.GetN ()));
   NS_LOG_INFO ("ECN marking enabled for " << ecnConfig << " configuration");
 
+  // Set up metrics collector for detailed queue and flow analysis
+  NS_LOG_INFO ("Setting up metrics collector for detailed performance analysis...");
+  Ptr<MetricsCollector> metricsCollector = CreateObject<MetricsCollector> ();
+  g_metricsCollector = metricsCollector; // Set global pointer for trace callbacks
+  std::string metricsPrefix = "metrics_" + workloadType + "_" + 
+                              std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
+                              ecnConfig;
+  metricsCollector->SetOutputPrefix (metricsPrefix);
+  
+  // Connect queue monitoring to RED queue disciplines
+  NS_LOG_INFO ("Connecting queue monitoring to RED queue disciplines...");
+  uint32_t queueId = 0;
+  
+  // Monitor leaf-spine queues
+  for (uint32_t i = 0; i < leafSpineQueueDiscs.GetN (); ++i)
+    {
+      Ptr<QueueDisc> qdisc = leafSpineQueueDiscs.Get (i);
+      
+      qdisc->TraceConnectWithoutContext ("Enqueue", 
+        MakeBoundCallback (&QueueEnqueueTrace, queueId));
+      qdisc->TraceConnectWithoutContext ("Dequeue", 
+        MakeBoundCallback (&QueueDequeueTrace, queueId));
+      qdisc->TraceConnectWithoutContext ("Drop", 
+        MakeBoundCallback (&QueueDropTrace, queueId));
+      
+      // Initialize queue monitoring
+      metricsCollector->MonitorQueue (nullptr, queueId);
+      queueId++;
+    }
+  
+  // Monitor server-leaf queues
+  for (uint32_t i = 0; i < serverLeafQueueDiscs.GetN (); ++i)
+    {
+      Ptr<QueueDisc> qdisc = serverLeafQueueDiscs.Get (i);
+      
+      qdisc->TraceConnectWithoutContext ("Enqueue", 
+        MakeBoundCallback (&QueueEnqueueTrace, queueId));
+      qdisc->TraceConnectWithoutContext ("Dequeue", 
+        MakeBoundCallback (&QueueDequeueTrace, queueId));
+      qdisc->TraceConnectWithoutContext ("Drop", 
+        MakeBoundCallback (&QueueDropTrace, queueId));
+      
+      // Initialize queue monitoring
+      metricsCollector->MonitorQueue (nullptr, queueId);
+      queueId++;
+    }
+  
+  NS_LOG_INFO ("Queue monitoring connected to " << queueId << " queue disciplines");
+
   // Populate routing tables
   NS_LOG_INFO ("Populating routing tables...");
   Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
+
+  // Set up FlowMonitor for comprehensive data collection
+  NS_LOG_INFO ("Setting up FlowMonitor for data collection...");
+  Ptr<FlowMonitor> flowMonitor;
+  FlowMonitorHelper flowHelper;
+  flowMonitor = flowHelper.InstallAll ();
+  
+  // Configure FlowMonitor settings for better accuracy
+  flowMonitor->SetAttribute ("DelayBinWidth", DoubleValue (0.001)); // 1ms bins for delay histograms
+  flowMonitor->SetAttribute ("JitterBinWidth", DoubleValue (0.001)); // 1ms bins for jitter histograms
+  flowMonitor->SetAttribute ("PacketSizeBinWidth", DoubleValue (20)); // 20-byte bins for packet size histograms
+  
+  NS_LOG_INFO ("FlowMonitor installed on all nodes for flow-level metrics collection");
 
   // Set up mobility model for visualization (optional)
   MobilityHelper mobility;
@@ -368,6 +463,12 @@ main (int argc, char *argv[])
       workloadGenerator->SetWorkloadType (wType);
       workloadGenerator->SetNetworkLoad (networkLoad);
       workloadGenerator->SetFlowArrivalRate (flowArrivalRate);
+      
+      // Connect metrics collector to workload generator for flow tracking
+      workloadGenerator->TraceConnectWithoutContext ("FlowStarted", 
+        MakeCallback (&MetricsCollector::FlowStart, metricsCollector));
+      workloadGenerator->TraceConnectWithoutContext ("FlowCompleted", 
+        MakeCallback (&MetricsCollector::FlowComplete, metricsCollector));
       
       // Install the workload generator on the first server (it will generate traffic to all servers)
       servers.Get (0)->AddApplication (workloadGenerator);
@@ -434,6 +535,53 @@ main (int argc, char *argv[])
   // Run simulation
   Simulator::Stop (Seconds (simulationTime));
   Simulator::Run ();
+  
+  // Export FlowMonitor data
+  NS_LOG_INFO ("Exporting FlowMonitor data...");
+  std::string flowStatsFile = "flow-stats_" + workloadType + "_" + 
+                              std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
+                              ecnConfig + ".xml";
+  flowMonitor->SerializeToXmlFile (flowStatsFile, true, true);
+  NS_LOG_INFO ("FlowMonitor statistics exported to: " << flowStatsFile);
+  
+  // Print flow statistics summary
+  flowMonitor->CheckForLostPackets ();
+  Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier> (flowHelper.GetClassifier ());
+  FlowMonitor::FlowStatsContainer stats = flowMonitor->GetFlowStats ();
+  
+  NS_LOG_INFO ("Flow Statistics Summary:");
+  NS_LOG_INFO ("- Total flows detected: " << stats.size ());
+  
+  uint32_t totalTxPackets = 0, totalRxPackets = 0, totalLostPackets = 0;
+  uint64_t totalTxBytes = 0, totalRxBytes = 0;
+  double totalDelaySum = 0.0;
+  uint32_t delayCount = 0;
+  
+  for (auto& flow : stats)
+    {
+      totalTxPackets += flow.second.txPackets;
+      totalRxPackets += flow.second.rxPackets;
+      totalLostPackets += flow.second.lostPackets;
+      totalTxBytes += flow.second.txBytes;
+      totalRxBytes += flow.second.rxBytes;
+      totalDelaySum += flow.second.delaySum.GetSeconds ();
+      delayCount += flow.second.rxPackets;
+    }
+  
+  NS_LOG_INFO ("- Total TX packets: " << totalTxPackets);
+  NS_LOG_INFO ("- Total RX packets: " << totalRxPackets);
+  NS_LOG_INFO ("- Total lost packets: " << totalLostPackets);
+  NS_LOG_INFO ("- Packet loss rate: " << (100.0 * totalLostPackets / totalTxPackets) << "%");
+  NS_LOG_INFO ("- Total TX bytes: " << totalTxBytes << " (" << (totalTxBytes / 1024.0 / 1024.0) << " MB)");
+  NS_LOG_INFO ("- Total RX bytes: " << totalRxBytes << " (" << (totalRxBytes / 1024.0 / 1024.0) << " MB)");
+  NS_LOG_INFO ("- Average delay: " << (delayCount > 0 ? (totalDelaySum / delayCount * 1000) : 0) << " ms");
+  NS_LOG_INFO ("- Aggregate throughput: " << (totalRxBytes * 8.0 / simulationTime / 1000000.0) << " Mbps");
+  
+  // Generate metrics collector reports
+  NS_LOG_INFO ("Generating detailed metrics reports...");
+  metricsCollector->GenerateReport ();
+  metricsCollector->ExportQueueStats ();
+  
   Simulator::Destroy ();
 
   NS_LOG_INFO ("Simulation completed successfully");
