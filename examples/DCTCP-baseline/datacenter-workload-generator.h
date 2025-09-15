@@ -40,20 +40,14 @@ enum WorkloadType
 };
 
 /**
- * \brief Flow information structure
+ * \brief Connection information structure (simplified)
  */
-struct FlowInfo
+struct ConnectionInfo
 {
-  uint32_t sourceNodeId;      // Source server node ID
-  uint32_t destNodeId;        // Destination server node ID
-  uint64_t flowSize;          // Flow size in bytes
-  Time startTime;             // Flow start time
-  Time duration;              // Flow duration
-  uint16_t port;              // Destination port
-  bool isActive;              // Whether flow is currently active
-  Ptr<Socket> socket;         // Socket for this flow
-  uint64_t bytesSent;         // Bytes sent so far
-  uint32_t flowId;            // Unique flow identifier
+  uint64_t targetBytes;       // Target bytes to send
+  uint64_t bytesSent;         // Bytes sent so far  
+  Ptr<Socket> socket;         // Socket for this connection
+  uint32_t connectionId;      // Unique connection identifier
 };
 
 /**
@@ -108,24 +102,6 @@ public:
    */
   void SetFlowArrivalRate (double rate);
 
-  /**
-   * \brief Get the total number of active flows
-   * \return Number of currently active flows
-   */
-  uint32_t GetActiveFlows () const;
-
-  /**
-   * \brief Get the total number of completed flows
-   * \return Number of completed flows
-   */
-  uint32_t GetCompletedFlows () const;
-
-  /**
-   * \brief Get the total bytes sent
-   * \return Total bytes sent across all flows
-   */
-  uint64_t GetTotalBytesSent () const;
-
 protected:
   virtual void DoDispose (void);
 
@@ -135,20 +111,20 @@ private:
   virtual void StopApplication (void);
 
   /**
-   * \brief Schedule the next flow arrival
+   * \brief Schedule the next connection
    */
-  void ScheduleNextFlow ();
+  void ScheduleNextConnection ();
 
   /**
-   * \brief Generate and start a new flow
+   * \brief Generate and start a new connection
    */
-  void GenerateFlow ();
+  void GenerateConnection ();
 
   /**
-   * \brief Generate flow size based on workload type
-   * \return Flow size in bytes
+   * \brief Generate transfer size based on workload type
+   * \return Transfer size in bytes
    */
-  uint64_t GenerateFlowSize ();
+  uint64_t GenerateTransferSize ();
 
   /**
    * \brief Select random source and destination servers
@@ -158,10 +134,12 @@ private:
   void SelectRandomEndpoints (uint32_t &sourceId, uint32_t &destId);
 
   /**
-   * \brief Start a specific flow
-   * \param flowInfo The flow information structure
+   * \brief Start a specific connection
+   * \param connectionInfo The connection information structure
+   * \param sourceNodeId Source node ID
+   * \param destNodeId Destination node ID
    */
-  void StartFlow (FlowInfo &flowInfo);
+  void StartConnection (ConnectionInfo &connectionInfo, uint32_t sourceNodeId, uint32_t destNodeId);
 
   /**
    * \brief Handle successful socket connection
@@ -183,14 +161,14 @@ private:
   void SendData (Ptr<Socket> socket, uint32_t availableBufferSize);
 
   /**
-   * \brief Handle flow completion
-   * \param flowId The ID of the completed flow
+   * \brief Handle connection completion
+   * \param connectionId The ID of the completed connection
    */
-  void FlowCompleted (uint32_t flowId);
+  void ConnectionCompleted (uint32_t connectionId);
 
   /**
-   * \brief Calculate flow inter-arrival time based on Poisson process
-   * \return Time until next flow arrival
+   * \brief Calculate connection inter-arrival time based on Poisson process
+   * \return Time until next connection arrival
    */
   Time CalculateNextArrivalTime ();
 
@@ -202,30 +180,22 @@ private:
   uint16_t m_basePort;                        //!< Base port for connections
 
   // Random variables for different distributions
-  Ptr<ExponentialRandomVariable> m_flowArrivalRv;  //!< Flow arrival times (Poisson process)
-  Ptr<UniformRandomVariable> m_serverSelectRv;     //!< Server selection
-  Ptr<UniformRandomVariable> m_portSelectRv;       //!< Port selection
+  Ptr<ExponentialRandomVariable> m_connectionArrivalRv;  //!< Connection arrival times (Poisson process)
+  Ptr<UniformRandomVariable> m_serverSelectRv;          //!< Server selection
   
-  // Flow size random variables (heavy-tailed distributions)
-  Ptr<ParetoRandomVariable> m_webSearchFlowSizeRv;  //!< Web search flow sizes
-  Ptr<ParetoRandomVariable> m_dataMiningFlowSizeRv; //!< Data mining flow sizes
-  Ptr<LogNormalRandomVariable> m_mixedFlowSizeRv;   //!< Mixed workload flow sizes
+  // Transfer size random variables (heavy-tailed distributions)
+  Ptr<ParetoRandomVariable> m_webSearchSizeRv;     //!< Web search transfer sizes
+  Ptr<ParetoRandomVariable> m_dataMiningSizeRv;          //!< Data mining transfer sizes
+  Ptr<LogNormalRandomVariable> m_mixedSizeRv;      //!< Mixed workload transfer sizes
 
   // State tracking
-  std::map<uint32_t, FlowInfo> m_activeFlows;      //!< Currently active flows
-  std::map<Ptr<Socket>, uint32_t> m_socketToFlow;  //!< Socket to flow ID mapping
-  uint32_t m_nextFlowId;                           //!< Next flow ID to assign
-  uint32_t m_completedFlows;                       //!< Number of completed flows
-  uint64_t m_totalBytesSent;                       //!< Total bytes sent
-  bool m_running;                                  //!< Whether generator is running
+  std::map<uint32_t, ConnectionInfo> m_activeConnections;      //!< Currently active connections
+  std::map<Ptr<Socket>, uint32_t> m_socketToConnection;       //!< Socket to connection ID mapping
+  uint32_t m_nextConnectionId;                                //!< Next connection ID to assign
+  bool m_running;                                             //!< Whether generator is running
 
   // Events
-  EventId m_nextFlowEvent;                         //!< Next flow generation event
-
-  // Traced callbacks
-  TracedCallback<uint32_t, uint64_t> m_flowStarted;    //!< Flow started trace
-  TracedCallback<uint32_t, uint64_t> m_flowCompleted;  //!< Flow completed trace
-  TracedCallback<uint64_t> m_bytesSent;                //!< Bytes sent trace
+  EventId m_nextConnectionEvent;                              //!< Next connection generation event
 };
 
 } // namespace ns3

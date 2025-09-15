@@ -45,10 +45,6 @@ MetricsCollector::~MetricsCollector ()
     {
       m_queueFile.close ();
     }
-  if (m_flowFile.is_open ())
-    {
-      m_flowFile.close ();
-    }
 }
 
 void
@@ -58,18 +54,11 @@ MetricsCollector::SetOutputPrefix (const std::string &prefix)
   
   // Open output files
   std::string queueFileName = m_outputPrefix + "_queues.txt";
-  std::string flowFileName = m_outputPrefix + "_flows.txt";
   
   m_queueFile.open (queueFileName);
   if (m_queueFile.is_open ())
     {
       m_queueFile << "# Time(s), QueueID, Event, QueueLength, PacketSize, Delay(ms)\n";
-    }
-  
-  m_flowFile.open (flowFileName);
-  if (m_flowFile.is_open ())
-    {
-      m_flowFile << "# FlowID, ExpectedSize, ActualSize, StartTime, CompletionTime, FCT(ms)\n";
     }
 }
 
@@ -209,49 +198,6 @@ MetricsCollector::PacketDrop (uint32_t queueId, Ptr<const Packet> packet)
 }
 
 void
-MetricsCollector::FlowStart (uint32_t flowId, uint64_t flowSize)
-{
-  NS_LOG_FUNCTION (this << flowId << flowSize);
-  
-  FlowMetrics metrics;
-  metrics.flowId = flowId;
-  metrics.expectedSize = flowSize;
-  metrics.actualSize = 0;
-  metrics.startTime = Simulator::Now ();
-  metrics.fct = 0.0;
-  
-  m_flowStats[flowId] = metrics;
-}
-
-void
-MetricsCollector::FlowComplete (uint32_t flowId, uint64_t actualBytes)
-{
-  NS_LOG_FUNCTION (this << flowId << actualBytes);
-  
-  auto it = m_flowStats.find (flowId);
-  if (it == m_flowStats.end ())
-    {
-      return;
-    }
-  
-  FlowMetrics &metrics = it->second;
-  metrics.actualSize = actualBytes;
-  metrics.completionTime = Simulator::Now ();
-  metrics.fct = (metrics.completionTime - metrics.startTime).GetSeconds ();
-  
-  // Log to file
-  if (m_flowFile.is_open ())
-    {
-      m_flowFile << flowId << ", "
-                 << metrics.expectedSize << ", "
-                 << metrics.actualSize << ", "
-                 << metrics.startTime.GetSeconds () << ", "
-                 << metrics.completionTime.GetSeconds () << ", "
-                 << (metrics.fct * 1000) << "\n";
-    }
-}
-
-void
 MetricsCollector::GenerateReport ()
 {
   NS_LOG_FUNCTION (this);
@@ -288,38 +234,6 @@ MetricsCollector::GenerateReport ()
                                   metrics.queueLengthSamples.size ();
           std::cout << "  Avg Queue Length: " << avgQueueLength << " packets\n";
           std::cout << "  Max Queue Length: " << metrics.maxQueueLength << " packets\n";
-        }
-    }
-  
-  // Flow statistics
-  std::cout << "\nFlow Completion Time Statistics:\n";
-  if (!m_flowStats.empty ())
-    {
-      std::vector<double> fctSamples;
-      uint32_t completedFlows = 0;
-      
-      for (auto& flowPair : m_flowStats)
-        {
-          FlowMetrics &metrics = flowPair.second;
-          if (metrics.fct > 0)
-            {
-              fctSamples.push_back (metrics.fct);
-              completedFlows++;
-            }
-        }
-      
-      if (!fctSamples.empty ())
-        {
-          std::sort (fctSamples.begin (), fctSamples.end ());
-          double avgFct = std::accumulate (fctSamples.begin (), fctSamples.end (), 0.0) / fctSamples.size ();
-          double medianFct = fctSamples[fctSamples.size () / 2];
-          double p95Fct = fctSamples[static_cast<size_t> (fctSamples.size () * 0.95)];
-          
-          std::cout << "  Total Flows: " << m_flowStats.size () << "\n";
-          std::cout << "  Completed Flows: " << completedFlows << "\n";
-          std::cout << "  Avg FCT: " << (avgFct * 1000) << " ms\n";
-          std::cout << "  Median FCT: " << (medianFct * 1000) << " ms\n";
-          std::cout << "  95th percentile FCT: " << (p95Fct * 1000) << " ms\n";
         }
     }
   

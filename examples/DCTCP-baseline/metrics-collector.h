@@ -76,20 +76,6 @@ public:
   void PacketDrop (uint32_t queueId, Ptr<const Packet> packet);
   
   /**
-   * \brief Record flow start event
-   * \param flowId Flow identifier
-   * \param flowSize Expected flow size in bytes
-   */
-  void FlowStart (uint32_t flowId, uint64_t flowSize);
-  
-  /**
-   * \brief Record flow completion event
-   * \param flowId Flow identifier
-   * \param actualBytes Actual bytes transmitted
-   */
-  void FlowComplete (uint32_t flowId, uint64_t actualBytes);
-  
-  /**
    * \brief Generate final metrics report
    */
   void GenerateReport ();
@@ -113,16 +99,6 @@ private:
     std::vector<double> delaySamples;
   };
   
-  struct FlowMetrics
-  {
-    uint32_t flowId;
-    uint64_t expectedSize;
-    uint64_t actualSize;
-    Time startTime;
-    Time completionTime;
-    double fct; // Flow completion time in seconds
-  };
-  
   struct PacketInQueue
   {
     Time arrivalTime;
@@ -130,12 +106,10 @@ private:
   };
   
   std::map<uint32_t, QueueMetrics> m_queueStats;
-  std::map<uint32_t, FlowMetrics> m_flowStats;
   std::map<uint32_t, std::map<uint32_t, PacketInQueue>> m_packetsInQueue; // queueId -> packetId -> info
   
   std::string m_outputPrefix;
   std::ofstream m_queueFile;
-  std::ofstream m_flowFile;
   
   uint32_t m_nextPacketId;
   Time m_lastStatsTime;

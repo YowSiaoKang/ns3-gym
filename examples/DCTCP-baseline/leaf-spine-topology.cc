@@ -33,32 +33,20 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE ("LeafSpineTopology");
 
-// Global pointer to metrics collector for queue tracing
-Ptr<MetricsCollector> g_metricsCollector;
-
-// Queue trace callbacks
-void QueueEnqueueTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+// Simple static adapter functions for QueueDisc trace signatures
+static void EnqueueTrace (Ptr<MetricsCollector> collector, uint32_t queueId, Ptr<const QueueDiscItem> item)
 {
-  if (g_metricsCollector)
-    {
-      g_metricsCollector->PacketEnqueue (queueId, item->GetPacket ());
-    }
+  collector->PacketEnqueue (queueId, item->GetPacket ());
 }
 
-void QueueDequeueTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+static void DequeueTrace (Ptr<MetricsCollector> collector, uint32_t queueId, Ptr<const QueueDiscItem> item)
 {
-  if (g_metricsCollector)
-    {
-      g_metricsCollector->PacketDequeue (queueId, item->GetPacket ());
-    }
+  collector->PacketDequeue (queueId, item->GetPacket ());
 }
 
-void QueueDropTrace (uint32_t queueId, Ptr<const QueueDiscItem> item)
+static void DropTrace (Ptr<MetricsCollector> collector, uint32_t queueId, Ptr<const QueueDiscItem> item)
 {
-  if (g_metricsCollector)
-    {
-      g_metricsCollector->PacketDrop (queueId, item->GetPacket ());
-    }
+  collector->PacketDrop (queueId, item->GetPacket ());
 }
 
 /**
@@ -193,23 +181,27 @@ main (int argc, char *argv[])
       // SECN1 configuration
       serverLeafMinTh_KB = 5;    // 5KB
       serverLeafMaxTh_KB = 200;  // 200KB
-      // Scale for 100Gbps links (4x the 25Gbps bandwidth)
-      leafSpineMinTh_KB = serverLeafMinTh_KB * 4;  // 20KB
-      leafSpineMaxTh_KB = serverLeafMaxTh_KB * 4;  // 800KB
     }
   else if (ecnConfig == "SECN2")
     {
       // SECN2 configuration
       serverLeafMinTh_KB = 100;   // 100KB
       serverLeafMaxTh_KB = 400;   // 400KB
-      // Scale for 100Gbps links (4x the 25Gbps bandwidth)
-      leafSpineMinTh_KB = serverLeafMinTh_KB * 4;  // 400KB
-      leafSpineMaxTh_KB = serverLeafMaxTh_KB * 4;  // 1600KB
     }
   else
     {
-      NS_FATAL_ERROR ("Invalid ECN configuration. Use SECN1 or SECN2");
+      NS_FATAL_ERROR ("Invalid ECN configuration: " << ecnConfig << ". Use SECN1 or SECN2");
     }
+  
+  // Calculate dynamic scaling factor based on bandwidth ratio
+  DataRate serverLeafDataRate (serverLeafBandwidth);
+  DataRate leafSpineDataRate (leafSpineBandwidth);
+  double bandwidthRatio = static_cast<double> (leafSpineDataRate.GetBitRate ()) / 
+                          static_cast<double> (serverLeafDataRate.GetBitRate ());
+  
+  // Scale leaf-spine thresholds based on actual bandwidth ratio
+  leafSpineMinTh_KB = static_cast<uint32_t> (serverLeafMinTh_KB * bandwidthRatio);
+  leafSpineMaxTh_KB = static_cast<uint32_t> (serverLeafMaxTh_KB * bandwidthRatio);
   
   // Convert KB to bytes for RED queue configuration
   uint32_t serverLeafMinTh_bytes = serverLeafMinTh_KB * 1024;
@@ -221,6 +213,7 @@ main (int argc, char *argv[])
   uint32_t queueSize_bytes = queueSize_MB * 1024 * 1024;  // 8MB in bytes
   
   NS_LOG_INFO ("ECN Threshold Configuration (" << ecnConfig << "):");
+  NS_LOG_INFO ("Bandwidth ratio (leaf-spine/server-leaf): " << bandwidthRatio << "x");
   NS_LOG_INFO ("Server-Leaf links (" << serverLeafBandwidth << "):");
   NS_LOG_INFO ("  MinTh: " << serverLeafMinTh_KB << "KB (" << serverLeafMinTh_bytes << " bytes)");
   NS_LOG_INFO ("  MaxTh: " << serverLeafMaxTh_KB << "KB (" << serverLeafMaxTh_bytes << " bytes)");
@@ -340,7 +333,6 @@ main (int argc, char *argv[])
   // Set up metrics collector for detailed queue and flow analysis
   NS_LOG_INFO ("Setting up metrics collector for detailed performance analysis...");
   Ptr<MetricsCollector> metricsCollector = CreateObject<MetricsCollector> ();
-  g_metricsCollector = metricsCollector; // Set global pointer for trace callbacks
   std::string metricsPrefix = "metrics_" + workloadType + "_" + 
                               std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
                               ecnConfig;
@@ -356,11 +348,11 @@ main (int argc, char *argv[])
       Ptr<QueueDisc> qdisc = leafSpineQueueDiscs.Get (i);
       
       qdisc->TraceConnectWithoutContext ("Enqueue", 
-        MakeBoundCallback (&QueueEnqueueTrace, queueId));
+        MakeBoundCallback (&EnqueueTrace, metricsCollector, queueId));
       qdisc->TraceConnectWithoutContext ("Dequeue", 
-        MakeBoundCallback (&QueueDequeueTrace, queueId));
+        MakeBoundCallback (&DequeueTrace, metricsCollector, queueId));
       qdisc->TraceConnectWithoutContext ("Drop", 
-        MakeBoundCallback (&QueueDropTrace, queueId));
+        MakeBoundCallback (&DropTrace, metricsCollector, queueId));
       
       // Initialize queue monitoring
       metricsCollector->MonitorQueue (nullptr, queueId);
@@ -373,11 +365,11 @@ main (int argc, char *argv[])
       Ptr<QueueDisc> qdisc = serverLeafQueueDiscs.Get (i);
       
       qdisc->TraceConnectWithoutContext ("Enqueue", 
-        MakeBoundCallback (&QueueEnqueueTrace, queueId));
+        MakeBoundCallback (&EnqueueTrace, metricsCollector, queueId));
       qdisc->TraceConnectWithoutContext ("Dequeue", 
-        MakeBoundCallback (&QueueDequeueTrace, queueId));
+        MakeBoundCallback (&DequeueTrace, metricsCollector, queueId));
       qdisc->TraceConnectWithoutContext ("Drop", 
-        MakeBoundCallback (&QueueDropTrace, queueId));
+        MakeBoundCallback (&DropTrace, metricsCollector, queueId));
       
       // Initialize queue monitoring
       metricsCollector->MonitorQueue (nullptr, queueId);
@@ -464,12 +456,6 @@ main (int argc, char *argv[])
       workloadGenerator->SetNetworkLoad (networkLoad);
       workloadGenerator->SetFlowArrivalRate (flowArrivalRate);
       
-      // Connect metrics collector to workload generator for flow tracking
-      workloadGenerator->TraceConnectWithoutContext ("FlowStarted", 
-        MakeCallback (&MetricsCollector::FlowStart, metricsCollector));
-      workloadGenerator->TraceConnectWithoutContext ("FlowCompleted", 
-        MakeCallback (&MetricsCollector::FlowComplete, metricsCollector));
-      
       // Install the workload generator on the first server (it will generate traffic to all servers)
       servers.Get (0)->AddApplication (workloadGenerator);
       workloadGenerator->SetStartTime (Seconds (1.0));
@@ -551,31 +537,8 @@ main (int argc, char *argv[])
   
   NS_LOG_INFO ("Flow Statistics Summary:");
   NS_LOG_INFO ("- Total flows detected: " << stats.size ());
-  
-  uint32_t totalTxPackets = 0, totalRxPackets = 0, totalLostPackets = 0;
-  uint64_t totalTxBytes = 0, totalRxBytes = 0;
-  double totalDelaySum = 0.0;
-  uint32_t delayCount = 0;
-  
-  for (auto& flow : stats)
-    {
-      totalTxPackets += flow.second.txPackets;
-      totalRxPackets += flow.second.rxPackets;
-      totalLostPackets += flow.second.lostPackets;
-      totalTxBytes += flow.second.txBytes;
-      totalRxBytes += flow.second.rxBytes;
-      totalDelaySum += flow.second.delaySum.GetSeconds ();
-      delayCount += flow.second.rxPackets;
-    }
-  
-  NS_LOG_INFO ("- Total TX packets: " << totalTxPackets);
-  NS_LOG_INFO ("- Total RX packets: " << totalRxPackets);
-  NS_LOG_INFO ("- Total lost packets: " << totalLostPackets);
-  NS_LOG_INFO ("- Packet loss rate: " << (100.0 * totalLostPackets / totalTxPackets) << "%");
-  NS_LOG_INFO ("- Total TX bytes: " << totalTxBytes << " (" << (totalTxBytes / 1024.0 / 1024.0) << " MB)");
-  NS_LOG_INFO ("- Total RX bytes: " << totalRxBytes << " (" << (totalRxBytes / 1024.0 / 1024.0) << " MB)");
-  NS_LOG_INFO ("- Average delay: " << (delayCount > 0 ? (totalDelaySum / delayCount * 1000) : 0) << " ms");
-  NS_LOG_INFO ("- Aggregate throughput: " << (totalRxBytes * 8.0 / simulationTime / 1000000.0) << " Mbps");
+  NS_LOG_INFO ("- Detailed flow statistics available in XML file: " << flowStatsFile);
+  NS_LOG_INFO ("- Use FlowMonitor XML post-processing tools for comprehensive analysis");
   
   // Generate metrics collector reports
   NS_LOG_INFO ("Generating detailed metrics reports...");
