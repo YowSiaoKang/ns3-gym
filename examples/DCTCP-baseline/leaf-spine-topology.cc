@@ -566,15 +566,142 @@ main (int argc, char *argv[])
   
   NS_LOG_INFO ("FlowMonitor statistics exported to: " << flowStatsFile);
   
-  // Print flow statistics summary
+  // Print comprehensive flow statistics summary
   flowMonitor->CheckForLostPackets ();
   Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier> (flowHelper.GetClassifier ());
   FlowMonitor::FlowStatsContainer stats = flowMonitor->GetFlowStats ();
   
-  NS_LOG_INFO ("Flow Statistics Summary:");
+  // Aggregate flow statistics
+  uint64_t totalTxPackets = 0;
+  uint64_t totalRxPackets = 0;
+  uint64_t totalLostPackets = 0;
+  uint64_t totalTxBytes = 0;
+  uint64_t totalRxBytes = 0;
+  double totalDelaySum = 0.0;
+  double totalJitterSum = 0.0;
+  uint32_t flowsWithData = 0;
+  uint32_t tcpFlows = 0;
+  uint32_t udpFlows = 0;
+  std::vector<double> allDelays;
+  std::vector<double> allThroughputs;
+  
+  for (auto& flowPair : stats)
+    {
+      FlowMonitor::FlowStats flow = flowPair.second;
+      
+      if (flow.txPackets > 0)
+        {
+          flowsWithData++;
+          totalTxPackets += flow.txPackets;
+          totalRxPackets += flow.rxPackets;
+          totalLostPackets += flow.lostPackets;
+          totalTxBytes += flow.txBytes;
+          totalRxBytes += flow.rxBytes;
+          
+          if (flow.rxPackets > 0)
+            {
+              double avgDelay = flow.delaySum.GetSeconds() / flow.rxPackets;
+              totalDelaySum += flow.delaySum.GetSeconds();
+              allDelays.push_back(avgDelay);
+              
+              if (flow.rxPackets > 1)
+                {
+                  double avgJitter = flow.jitterSum.GetSeconds() / (flow.rxPackets - 1);
+                  totalJitterSum += flow.jitterSum.GetSeconds();
+                }
+              
+              // Calculate throughput (Mbps)
+              double throughput = (flow.rxBytes * 8.0) / (simulationTime * 1e6);
+              allThroughputs.push_back(throughput);
+            }
+          
+          // Classify flow type based on protocol
+          Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flowPair.first);
+          if (t.protocol == 6) // TCP
+            {
+              tcpFlows++;
+            }
+          else if (t.protocol == 17) // UDP
+            {
+              udpFlows++;
+            }
+        }
+    }
+  
+  // Calculate derived metrics
+  double packetLossRate = (totalTxPackets > 0) ? (100.0 * totalLostPackets / totalTxPackets) : 0.0;
+  double avgDelay = (totalRxPackets > 0) ? (totalDelaySum / totalRxPackets * 1000) : 0.0; // in ms
+  double avgJitter = (totalRxPackets > 1) ? (totalJitterSum / (totalRxPackets - 1) * 1000) : 0.0; // in ms
+  double totalThroughput = (totalRxBytes * 8.0) / (simulationTime * 1e6); // Mbps
+  double goodput = (totalRxBytes * 8.0) / (simulationTime * 1e6); // Mbps (same as throughput for received data)
+  
+  // Calculate percentiles for delay and throughput
+  std::sort(allDelays.begin(), allDelays.end());
+  std::sort(allThroughputs.begin(), allThroughputs.end());
+  
+  double p50Delay = 0.0, p95Delay = 0.0, p99Delay = 0.0;
+  double p50Throughput = 0.0, p95Throughput = 0.0;
+  
+  if (!allDelays.empty())
+    {
+      p50Delay = allDelays[allDelays.size() / 2] * 1000; // ms
+      p95Delay = allDelays[static_cast<size_t>(allDelays.size() * 0.95)] * 1000; // ms
+      p99Delay = allDelays[static_cast<size_t>(allDelays.size() * 0.99)] * 1000; // ms
+    }
+  
+  if (!allThroughputs.empty())
+    {
+      p50Throughput = allThroughputs[allThroughputs.size() / 2];
+      p95Throughput = allThroughputs[static_cast<size_t>(allThroughputs.size() * 0.95)];
+    }
+  
+  NS_LOG_INFO ("\n=== FLOW MONITOR STATISTICS SUMMARY ===");
+  NS_LOG_INFO ("Simulation Configuration:");
+  NS_LOG_INFO ("- Simulation Time: " << simulationTime << " seconds");
+  NS_LOG_INFO ("- ECN Configuration: " << ecnConfig);
+  NS_LOG_INFO ("- Workload Type: " << workloadType);
+  NS_LOG_INFO ("- Network Load: " << (networkLoad * 100) << "%");
+  
+  NS_LOG_INFO ("\nFlow Analysis:");
   NS_LOG_INFO ("- Total flows detected: " << stats.size ());
-  NS_LOG_INFO ("- Detailed flow statistics available in XML file: " << flowStatsFile);
-  NS_LOG_INFO ("- Use FlowMonitor XML post-processing tools for comprehensive analysis");
+  NS_LOG_INFO ("- Flows with data: " << flowsWithData);
+  NS_LOG_INFO ("- TCP flows: " << tcpFlows);
+  NS_LOG_INFO ("- UDP flows: " << udpFlows);
+  
+  NS_LOG_INFO ("\nPacket Statistics:");
+  NS_LOG_INFO ("- Total packets transmitted: " << totalTxPackets);
+  NS_LOG_INFO ("- Total packets received: " << totalRxPackets);
+  NS_LOG_INFO ("- Total packets lost: " << totalLostPackets);
+  NS_LOG_INFO ("- Packet loss rate: " << packetLossRate << " %");
+  
+  NS_LOG_INFO ("\nThroughput Analysis:");
+  NS_LOG_INFO ("- Total data transmitted: " << (totalTxBytes / (1024.0 * 1024.0)) << " MB");
+  NS_LOG_INFO ("- Total data received: " << (totalRxBytes / (1024.0 * 1024.0)) << " MB");
+  NS_LOG_INFO ("- Aggregate throughput: " << totalThroughput << " Mbps");
+  NS_LOG_INFO ("- Average per-flow throughput: " << (flowsWithData > 0 ? totalThroughput / flowsWithData : 0.0) << " Mbps");
+  
+  if (!allThroughputs.empty())
+    {
+      NS_LOG_INFO ("- Median flow throughput: " << p50Throughput << " Mbps");
+      NS_LOG_INFO ("- 95th percentile flow throughput: " << p95Throughput << " Mbps");
+    }
+  
+  NS_LOG_INFO ("\nLatency Analysis:");
+  NS_LOG_INFO ("- Average end-to-end delay: " << avgDelay << " ms");
+  NS_LOG_INFO ("- Average jitter: " << avgJitter << " ms");
+  
+  if (!allDelays.empty())
+    {
+      NS_LOG_INFO ("- Median flow delay: " << p50Delay << " ms");
+      NS_LOG_INFO ("- 95th percentile delay: " << p95Delay << " ms");
+      NS_LOG_INFO ("- 99th percentile delay: " << p99Delay << " ms");
+    }
+  
+  NS_LOG_INFO ("\nData Export:");
+  NS_LOG_INFO ("- Detailed flow statistics: " << flowStatsFile);
+  NS_LOG_INFO ("- Queue statistics: " << metricsPrefix << "_queue_summary.txt");
+  NS_LOG_INFO ("- Use post-processing tools for detailed analysis");
+  NS_LOG_INFO ("=== END FLOW MONITOR SUMMARY ===\n");
   
   // Generate metrics collector reports
   NS_LOG_INFO ("Generating detailed metrics reports...");

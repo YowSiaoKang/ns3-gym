@@ -205,36 +205,84 @@ MetricsCollector::GenerateReport ()
   std::cout << "\n=== METRICS COLLECTION REPORT ===\n";
   std::cout << std::fixed << std::setprecision (2);
   
-  // Queue statistics
-  std::cout << "\nQueue Statistics:\n";
+  // Aggregate statistics across all queues
+  uint64_t totalEnqueued = 0;
+  uint64_t totalDequeued = 0;
+  uint64_t totalDropped = 0;
+  uint64_t totalBytes = 0;
+  double totalDelaySum = 0.0;
+  uint32_t totalDelaySamples = 0;
+  uint32_t maxQueueLengthOverall = 0;
+  uint32_t activeQueues = 0;
+  std::vector<double> allDelaySamples;
+  std::vector<double> allQueueLengthSamples;
+  
   for (auto& queuePair : m_queueStats)
     {
       QueueMetrics &metrics = queuePair.second;
-      std::cout << "Queue " << metrics.queueId << ":\n";
-      std::cout << "  Enqueued: " << metrics.enqueueCount << " packets\n";
-      std::cout << "  Dequeued: " << metrics.dequeueCount << " packets\n";
-      std::cout << "  Dropped: " << metrics.dropCount << " packets\n";
-      std::cout << "  Drop Rate: " << (100.0 * metrics.dropCount / metrics.enqueueCount) << "%\n";
-      std::cout << "  Total Bytes: " << (metrics.totalBytes / 1024.0) << " KB\n";
-      
-      if (!metrics.delaySamples.empty ())
+      if (metrics.enqueueCount > 0) // Only count active queues
         {
-          double avgDelay = metrics.totalDelay / metrics.delaySamples.size ();
-          std::sort (metrics.delaySamples.begin (), metrics.delaySamples.end ());
-          double p95Delay = metrics.delaySamples[static_cast<size_t> (metrics.delaySamples.size () * 0.95)];
+          activeQueues++;
+          totalEnqueued += metrics.enqueueCount;
+          totalDequeued += metrics.dequeueCount;
+          totalDropped += metrics.dropCount;
+          totalBytes += metrics.totalBytes;
+          totalDelaySum += metrics.totalDelay;
+          totalDelaySamples += metrics.delaySamples.size();
           
-          std::cout << "  Avg Queuing Delay: " << (avgDelay * 1000) << " ms\n";
-          std::cout << "  95th percentile Delay: " << (p95Delay * 1000) << " ms\n";
+          if (metrics.maxQueueLength > maxQueueLengthOverall)
+            {
+              maxQueueLengthOverall = metrics.maxQueueLength;
+            }
+          
+          // Collect all delay samples for percentile calculation
+          allDelaySamples.insert(allDelaySamples.end(), 
+                                metrics.delaySamples.begin(), 
+                                metrics.delaySamples.end());
+          
+          // Collect all queue length samples
+          allQueueLengthSamples.insert(allQueueLengthSamples.end(), 
+                                      metrics.queueLengthSamples.begin(), 
+                                      metrics.queueLengthSamples.end());
         }
+    }
+  
+  // Calculate aggregate metrics
+  std::cout << "\nAggregate Queue Statistics (across " << activeQueues << " active queues):\n";
+  std::cout << "Total Queues Monitored: " << m_queueStats.size() << "\n";
+  std::cout << "Active Queues (with traffic): " << activeQueues << "\n";
+  std::cout << "Total Packets Enqueued: " << totalEnqueued << "\n";
+  std::cout << "Total Packets Dequeued: " << totalDequeued << "\n";
+  std::cout << "Total Packets Dropped: " << totalDropped << "\n";
+  
+  if (totalEnqueued > 0)
+    {
+      std::cout << "Overall Drop Rate: " << (100.0 * totalDropped / totalEnqueued) << "%\n";
+    }
+  
+  std::cout << "Total Data Processed: " << (totalBytes / (1024.0 * 1024.0)) << " MB\n";
+  
+  if (!allDelaySamples.empty())
+    {
+      double avgDelay = totalDelaySum / totalDelaySamples;
+      std::sort(allDelaySamples.begin(), allDelaySamples.end());
+      double p50Delay = allDelaySamples[allDelaySamples.size() / 2];
+      double p95Delay = allDelaySamples[static_cast<size_t>(allDelaySamples.size() * 0.95)];
+      double p99Delay = allDelaySamples[static_cast<size_t>(allDelaySamples.size() * 0.99)];
       
-      if (!metrics.queueLengthSamples.empty ())
-        {
-          double avgQueueLength = std::accumulate (metrics.queueLengthSamples.begin (), 
-                                                   metrics.queueLengthSamples.end (), 0.0) / 
-                                  metrics.queueLengthSamples.size ();
-          std::cout << "  Avg Queue Length: " << avgQueueLength << " packets\n";
-          std::cout << "  Max Queue Length: " << metrics.maxQueueLength << " packets\n";
-        }
+      std::cout << "Average Queuing Delay: " << (avgDelay * 1000) << " ms\n";
+      std::cout << "Median (50th percentile) Delay: " << (p50Delay * 1000) << " ms\n";
+      std::cout << "95th percentile Delay: " << (p95Delay * 1000) << " ms\n";
+      std::cout << "99th percentile Delay: " << (p99Delay * 1000) << " ms\n";
+    }
+  
+  if (!allQueueLengthSamples.empty())
+    {
+      double avgQueueLength = std::accumulate(allQueueLengthSamples.begin(), 
+                                             allQueueLengthSamples.end(), 0.0) / 
+                             allQueueLengthSamples.size();
+      std::cout << "Average Queue Length: " << avgQueueLength << " packets\n";
+      std::cout << "Maximum Queue Length: " << maxQueueLengthOverall << " packets\n";
     }
   
   std::cout << "\n=== END METRICS REPORT ===\n\n";
