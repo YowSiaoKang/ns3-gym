@@ -26,6 +26,7 @@
 #include "ns3/traffic-control-module.h"
 #include "ns3/internet-apps-module.h"
 #include "ns3/flow-monitor-module.h"
+#include "ns3/tcp-dctcp.h"
 #include "datacenter-workload-generator.h"
 #include "metrics-collector.h"
 
@@ -78,13 +79,13 @@ int
 main (int argc, char *argv[])
 {
   // Network configuration parameters
-  std::string leafSpineBandwidth = "100Gbps"; // higher bandwidth to support aggregated traffic
-  std::string leafSpineDelay = "5us";         // higher delay due to longer physical distance
-  std::string serverLeafBandwidth = "25Gbps"; // lower bandwidth for server-leaf links
-  std::string serverLeafDelay = "1us";        // lower delay due to shorter physical distance
+  std::string leafSpineBandwidth = "100Mbps"; // higher bandwidth to support aggregated traffic
+  std::string leafSpineDelay = "50us";         // higher delay due to longer physical distance
+  std::string serverLeafBandwidth = "25Mbps"; // lower bandwidth for server-leaf links
+  std::string serverLeafDelay = "10us";        // lower delay due to shorter physical distance
 
   // Simulation parameters
-  double simulationTime = 10.0; // seconds - longer for traffic analysis
+  double simulationTime = 5.0; // seconds - longer for traffic analysis
   uint32_t numSpineSwitches = 6;
   uint32_t numLeafSwitches = 12;
   uint32_t serversPerLeaf = 24;
@@ -98,6 +99,10 @@ main (int argc, char *argv[])
   double networkLoad = 0.7; // 70% load by default
   double flowArrivalRate = 200.0; // flows per second
   bool enableRealisticTraffic = true; // Enable realistic traffic patterns
+  bool enableASCII = false; // Enable ASCII tracing for text-based analysis
+  bool enablePcap = false; // Enable PCAP tracing for packet-level analysis
+  bool enableNetAnim = false; // Enable NetAnim for visual animation
+
   
   // Parse command line arguments
   CommandLine cmd (__FILE__);
@@ -107,6 +112,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("networkLoad", "Target network load (0.6, 0.7, 0.8, 0.9)", networkLoad);
   cmd.AddValue ("flowArrivalRate", "Average flows per second", flowArrivalRate);
   cmd.AddValue ("enableRealisticTraffic", "Enable realistic traffic patterns", enableRealisticTraffic);
+  cmd.AddValue ("enableASCII", "Enable ASCII tracing", enableASCII);
+  cmd.AddValue ("enablePcap", "Enable PCAP tracing", enablePcap);
+  cmd.AddValue ("enableNetAnim", "Enable NetAnim tracing", enableNetAnim);
   cmd.Parse (argc, argv);
 
   // Enable logging
@@ -117,6 +125,10 @@ main (int argc, char *argv[])
   
   // Set DCTCP as the default TCP congestion control algorithm
   Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (ns3::TcpDctcp::GetTypeId ()));
+
+  // Configure DCTCP-specific attributes for optimal performance
+  Config::SetDefault ("ns3::TcpDctcp::DctcpShiftG", DoubleValue (0.0625));  // g = 1/16 (default, but explicit)
+  Config::SetDefault ("ns3::TcpDctcp::UseEct0", BooleanValue (true));        // Use ECT(0) marking
 
   // TCP socket configuration for better DCTCP performance
   Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (1448));    // Standard MSS
@@ -395,37 +407,6 @@ main (int argc, char *argv[])
   
   NS_LOG_INFO ("FlowMonitor installed on all nodes for flow-level metrics collection");
 
-  // Set up mobility model for visualization (optional)
-  MobilityHelper mobility;
-  mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
-  
-  // Position spine switches at the top
-  for (uint32_t i = 0; i < numSpineSwitches; ++i)
-    {
-      Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
-      pos->SetPosition (Vector (i * 50.0, 100.0, 0.0));
-      spineSwitches.Get (i)->AggregateObject (pos);
-    }
-  
-  // Position leaf switches in the middle
-  for (uint32_t i = 0; i < numLeafSwitches; ++i)
-    {
-      Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
-      pos->SetPosition (Vector (i * 30.0, 50.0, 0.0));
-      leafSwitches.Get (i)->AggregateObject (pos);
-    }
-  
-  // Position servers at the bottom
-  for (uint32_t i = 0; i < totalServers; ++i)
-    {
-      uint32_t leafIdx = i / serversPerLeaf;
-      uint32_t serverInLeaf = i % serversPerLeaf;
-      Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
-      pos->SetPosition (Vector (leafIdx * 30.0 + (serverInLeaf % 6) * 5.0, 
-                               (serverInLeaf / 6) * 5.0, 0.0));
-      servers.Get (i)->AggregateObject (pos);
-    }
-
   // Set up realistic data center traffic workloads
   NS_LOG_INFO ("Setting up realistic data center traffic workloads...");
   
@@ -488,32 +469,80 @@ main (int argc, char *argv[])
       clientApps.Start (Seconds (2.0));
       clientApps.Stop (Seconds (simulationTime));
     }
-
-  // Enable tracing (optional)
-  // leafSpineP2P.EnablePcapAll ("leaf-spine-links");
-  // serverLeafP2P.EnablePcapAll ("server-leaf-links");
-
-  // Create animation file for NetAnim (optional)
-  AnimationInterface anim ("leaf-spine-topology.xml");
-  anim.SetConstantPosition (servers.Get (0), 0, 0);
   
-  // Set node descriptions for better visualization
-  for (uint32_t i = 0; i < numSpineSwitches; ++i)
+  // Enable ASCII tracing for text-based analysis
+  if (enableASCII)
     {
-      anim.UpdateNodeDescription (spineSwitches.Get (i), "Spine" + std::to_string (i));
-      anim.UpdateNodeColor (spineSwitches.Get (i), 255, 0, 0); // Red for spine
+      NS_LOG_INFO ("Enabling ASCII tracing for text-based analysis...");
+      AsciiTraceHelper ascii;
+      leafSpineP2P.EnableAsciiAll (ascii.CreateFileStream ("results/leaf-spine-device.tr"));
+      serverLeafP2P.EnableAsciiAll (ascii.CreateFileStream ("results/server-leaf-device.tr"));
     }
   
-  for (uint32_t i = 0; i < numLeafSwitches; ++i)
+  // Enable PCAP tracing for packet-level analysis
+  if (enablePcap)
     {
-      anim.UpdateNodeDescription (leafSwitches.Get (i), "Leaf" + std::to_string (i));
-      anim.UpdateNodeColor (leafSwitches.Get (i), 0, 255, 0); // Green for leaf
+      NS_LOG_INFO ("Enabling PCAP tracing for packet-level analysis...");
+      leafSpineP2P.EnablePcapAll ("results/leaf-spine-device", true);
+      serverLeafP2P.EnablePcapAll ("results/server-leaf-device", true);
     }
-  
-  for (uint32_t i = 0; i < totalServers; ++i)
+
+  // Create animation file for NetAnim
+  if (enableNetAnim)
     {
-      anim.UpdateNodeDescription (servers.Get (i), "Server" + std::to_string (i));
-      anim.UpdateNodeColor (servers.Get (i), 0, 0, 255); // Blue for servers
+      NS_LOG_INFO ("Setting up NetAnim for visual animation...");
+
+      // Set up mobility model for visualization (optional)
+      MobilityHelper mobility;
+      mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+      
+      // Position spine switches at the top
+      for (uint32_t i = 0; i < numSpineSwitches; ++i)
+      {
+        Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
+        pos->SetPosition (Vector (i * 50.0, 100.0, 0.0));
+          spineSwitches.Get (i)->AggregateObject (pos);
+        }
+        
+        // Position leaf switches in the middle
+      for (uint32_t i = 0; i < numLeafSwitches; ++i)
+      {
+        Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
+        pos->SetPosition (Vector (i * 30.0, 50.0, 0.0));
+        leafSwitches.Get (i)->AggregateObject (pos);
+      }
+      
+      // Position servers at the bottom
+      for (uint32_t i = 0; i < totalServers; ++i)
+      {
+        uint32_t leafIdx = i / serversPerLeaf;
+        uint32_t serverInLeaf = i % serversPerLeaf;
+        Ptr<ConstantPositionMobilityModel> pos = CreateObject<ConstantPositionMobilityModel> ();
+        pos->SetPosition (Vector (leafIdx * 30.0 + (serverInLeaf % 6) * 5.0, 
+        (serverInLeaf / 6) * 5.0, 0.0));
+          servers.Get (i)->AggregateObject (pos);
+      }
+        
+      AnimationInterface anim ("results/leaf-spine-topology.xml");
+      anim.SetConstantPosition (servers.Get (0), 0, 0);
+        
+      // Set node descriptions for better visualization
+      for (uint32_t i = 0; i < numSpineSwitches; ++i)
+      {
+        anim.UpdateNodeDescription (spineSwitches.Get (i), "Spine" + std::to_string (i));
+        anim.UpdateNodeColor (spineSwitches.Get (i), 255, 0, 0); // Red for spine
+      }
+      
+      for (uint32_t i = 0; i < numLeafSwitches; ++i)
+      {
+        anim.UpdateNodeDescription (leafSwitches.Get (i), "Leaf" + std::to_string (i));
+          anim.UpdateNodeColor (leafSwitches.Get (i), 0, 255, 0); // Green for leaf
+        }
+      
+      for (uint32_t i = 0; i < totalServers; ++i)
+        {
+          anim.UpdateNodeColor (servers.Get (i), 0, 0, 255); // Blue for servers
+        }
     }
 
   NS_LOG_INFO ("Starting simulation for " << simulationTime << " seconds");
@@ -524,10 +553,17 @@ main (int argc, char *argv[])
   
   // Export FlowMonitor data
   NS_LOG_INFO ("Exporting FlowMonitor data...");
+  
+  // Check for lost packets before serialization
+  flowMonitor->CheckForLostPackets ();
+  
   std::string flowStatsFile = "flow-stats_" + workloadType + "_" + 
                               std::to_string (static_cast<int> (networkLoad * 100)) + "pct_" + 
                               ecnConfig + ".xml";
+  
+  // Serialize with both flow monitor and flow classifier data (true, true)
   flowMonitor->SerializeToXmlFile (flowStatsFile, true, true);
+  
   NS_LOG_INFO ("FlowMonitor statistics exported to: " << flowStatsFile);
   
   // Print flow statistics summary
